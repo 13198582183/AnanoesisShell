@@ -1,0 +1,26 @@
+# 默认自动规范化文本换行符
+* text=auto
+
+# Shell 脚本必须 LF（Linux 服务器执行，CRLF 会导致 `$'\r': command not found`）
+*.sh text eol=lf
+
+# Windows 脚本保留 CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 明确文本类型，避免 diff 噪声
+*.md text
+*.yml text
+*.yaml text
+*.json text
+*.conf text
+
+# 二进制文件：禁止换行符转换与文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

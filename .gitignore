@@ -1,0 +1,52 @@
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- IDE / Editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Dependencies（技术栈锁定前通用忽略，锁定后可精简）----
+node_modules/
+.pnp
+.pnp.js
+vendor/
+
+# ---- Build outputs ----
+dist/
+build/
+out/
+target/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# ---- Environment（保留 .env.example）----
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---- Testing / coverage ----
+coverage/
+.nyc_output/
+
+# ---- Temp / cache ----
+*.tmp
+*.bak
+.cache/
+
+# ---- 敏感运维文件（含凭据，绝不入库）----
+deploy/.env.production
+deploy/tmp-*
+scripts/tmp-*

@@ -47,5 +47,19 @@
 
 ---
 
-**最后更新**: 2026-09-20
+## 3. Windows PowerShell 5.1 运行含中文的 UTF-8 无 BOM 脚本时解析报错
+
+**发现时间**: 2026-09-21
+**影响范围**: 仓库内所有含中文字符串 / 注释的 `.ps1` 脚本（如 `scripts/verify-structure.ps1`、`scripts/init-workspace.ps1`）在 Windows PowerShell 5.1 下的执行
+**症状**: 脚本无法运行，抛出 `MissingEndCurlyBrace`（“缺少右 `}`”）或 “Try 语句缺少其自己的 Catch 或 Finally 块”，报错行号指向结构完整的 `try {` / `exit 0`，肉眼检查括号并无缺失
+**根本原因**: Windows PowerShell 5.1 读取**无 BOM** 的 `.ps1` 时按系统 ANSI 代码页（中文系统为 GBK/936）解码；UTF-8 编码的中文字节被 GBK 误读，而 GBK 尾字节范围包含 `0x7B`/`0x7D`（即 `{`/`}`），会在字符串字面量中注入**游离的花括号**，破坏 `try{}` / `foreach{}` 的括号平衡，导致解析器中途报错。
+**解决方案**:
+- 将脚本重存为 **UTF-8 with BOM**，PowerShell 5.1 会据 BOM 正确识别为 UTF-8：
+  `$c = Get-Content -Raw -Encoding UTF8 $p; [IO.File]::WriteAllText($p, $c, (New-Object Text.UTF8Encoding $true))`
+- 或改用 PowerShell 7+（`pwsh`，默认按 UTF-8 读取脚本，无需 BOM）
+**预防措施**: 本项目所有含中文的 `.ps1` 一律以 **UTF-8 with BOM** 保存；用会剥离 BOM 的编辑器 / 工具改写脚本后，必须重新执行 `scripts\verify-structure.ps1` 确认可解析（观察 `$LASTEXITCODE` 是否为 `0`，而非仅看中文是否乱码）。
+
+---
+
+**最后更新**: 2026-09-21
 **维护者**: AI Agent + 开发团队

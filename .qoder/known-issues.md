@@ -61,5 +61,18 @@
 
 ---
 
+## 4. OpenSpec CLI 升级会覆盖 opsx 命令 / 技能的中文翻译
+
+**发现时间**: 2026-09-21
+**影响范围**: `.qoder/commands/opsx/*.md`（6 个命令）与 `.qoder/skills/openspec-*/SKILL.md`（6 个技能），共 12 个文件
+**症状**: 这些文件正文已中文化；一旦运行 `openspec update` 或重新 `openspec init --tools qoder`，它们会被英文原版重新生成，中文翻译全部丢失（`git diff` 显示整文件回退为英文）。
+**根本原因**: 命令与技能文件是 OpenSpec CLI 的**生成物**，由 CLI 按版本模板写出，不感知本地的手工翻译；升级即覆盖。
+**解决方案**:
+- 升级 OpenSpec CLI 后，重新中文化这 12 个文件。翻译策略：仅译 frontmatter 的 `description` 与正文散文；逐字保留 `name` / `allowed-tools` / `license` / `metadata`、所有代码块、CLI 命令与参数、JSON 字段名、路径、占位符（`<...>`），以及规格 DSL 模板（`## ADDED/MODIFIED/REMOVED/RENAMED Requirements`、`### Requirement:`、`#### Scenario:`、`**WHEN**`/`**THEN**`、`## Purpose`、`## Requirements`）。
+- “Store selection” 段、`"Using change: <name>"`、`"(Recommended)"` 等跨文件复用的固定串采用统一译法（沿用已中文化文件的既有用词）。
+**预防措施**: 已在 `.qoder/skills/README.md` 第二节标注该覆盖风险；把 OpenSpec CLI 升级视为一次「需重新中文化」的维护动作，升级后先 `git diff --stat .qoder/commands/opsx .qoder/skills/openspec-*` 确认是否被覆盖，再决定重译。
+
+---
+
 **最后更新**: 2026-09-21
 **维护者**: AI Agent + 开发团队

@@ -34,9 +34,9 @@
 
 ---
 
-## 二、OpenSpec 技能（由 CLI 维护，勿手工改动）
+## 二、OpenSpec 技能（由 CLI 生成，已本地中文化）
 
-随 `openspec init --tools qoder` 生成，对应 `/opsx:*` 斜杠命令，升级请用 `openspec update`：
+随 `openspec init --tools qoder` 生成，对应 `/opsx:*` 斜杠命令。生成物原为英文，本项目已将其**正文中文化**（连同对应的 `.qoder/commands/opsx/*.md` 命令文件，共 **12 个**）：
 
 | 技能 | 对应命令 |
 |------|---------|
@@ -47,4 +47,6 @@
 | openspec-sync-specs | `/opsx:sync` |
 | openspec-update-change | `/opsx:update` |
 
+> ⚠️ **中文化会被 CLI 覆盖**：`openspec update` 或重新 `openspec init` 会用英文原版**重新生成**上述技能与 `.qoder/commands/opsx/*.md`，覆盖中文翻译。任何 OpenSpec CLI 升级后，必须重新中文化这 12 个文件（详见 `.qoder/known-issues.md` 第 4 条）。翻译时仅译 `description` 与正文散文；`name` / `allowed-tools` / `license` / `metadata`、代码块、CLI 命令与参数、JSON 字段、路径、占位符、规格 DSL 模板均逐字保留。
+>
 > 许可证以 OpenSpec 项目（https://github.com/Fission-AI/OpenSpec）为准，与上面的 Superpowers MIT `LICENSE` 相互独立。

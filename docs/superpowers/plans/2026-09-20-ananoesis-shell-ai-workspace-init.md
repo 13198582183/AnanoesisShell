@@ -34,8 +34,8 @@ AnanoesisShell/
 ├── backend/                            [Task1 submodule] → AnanoesisShell-backend.git
 ├── openspec/                           [Task2 生成] 集中式规格
 ├── .qoder/
-│   ├── commands/opsx/*.md              [Task2 生成] /opsx:explore|propose|apply|archive
-│   ├── skills/                         [Task3 vendored] 8 个 Superpowers 技能 + LICENSE + README
+│   ├── commands/opsx/*.md              [Task2 生成] /opsx:explore|propose|apply|sync|update|archive（6 个）
+│   ├── skills/                         [Task2+Task3] 6 个 OpenSpec(openspec-*) + 8 个 Superpowers(vendored) + LICENSE + README
 │   ├── rules/workflow-conventions.md   [Task5]
 │   ├── rules/coding-standards.md       [Task5]
 │   ├── agents/*.md                     [Task6] 7 个栈无关角色
@@ -106,7 +106,7 @@ git commit -m "chore: add frontend/backend as git submodules (main branch)"
 
 **Files:**
 - Create: `openspec/`（specs/、changes/、project 元数据等，由 CLI 生成）
-- Create: `.qoder/commands/opsx/*.md`（`/opsx:explore|propose|apply|archive`）
+- Create: `.qoder/commands/opsx/*.md`（`/opsx:explore|propose|apply|sync|update|archive`，共 6 个）
 
 - [ ] **Step 1: 运行 openspec init（非交互）**
 
@@ -124,7 +124,7 @@ Run:
 Get-ChildItem openspec -Recurse -Force | ForEach-Object { $_.FullName.Substring((Get-Location).Path.Length) }
 Get-ChildItem .qoder\commands\opsx -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
 ```
-Expected: `openspec/` 含 `specs/`、`changes/`（及 CLI 生成的元数据文件）；`.qoder/commands/opsx/` 含 4 个 `.md`（explore/propose/apply/archive）。**若实际命令集不同，以本步输出为准，并同步更新 Task8 的 AGENTS.md 斜杠命令表。**
+Expected: `openspec/` 含 `specs/`、`changes/`（及 CLI 生成的元数据文件）；`.qoder/commands/opsx/` 含 6 个 `.md`（explore/propose/apply/sync/update/archive）。OpenSpec 1.11.0 同时在 `.qoder/skills/` 生成 6 个 `openspec-*` 技能，并写入 `openspec/config.yaml`（schema: spec-driven），不生成 `schemas/`。**命令集以本步实际输出为准，Task8 的 AGENTS.md 斜杠命令表已按 6 命令校准。**
 
 - [ ] **Step 3: 验证 openspec 可用**
 
@@ -162,7 +162,7 @@ $skills = @("brainstorming","writing-plans","executing-plans","test-driven-devel
 foreach ($s in $skills) { Copy-Item -Recurse -Force "$src\skills\$s" "$dst\$s" }
 Copy-Item -Force "$src\LICENSE" "$dst\LICENSE"
 ```
-Expected: `.qoder/skills/` 下出现 8 个技能目录（各含 `SKILL.md`）+ `LICENSE`。
+Expected: `.qoder/skills/` 下新增 8 个 Superpowers 技能目录（各含 `SKILL.md`）+ `LICENSE`；连同 Task2 生成的 6 个 `openspec-*` 技能，共 14 个技能目录。
 
 - [ ] **Step 2: 写入 `.qoder/skills/README.md`**
 
@@ -201,7 +201,7 @@ Run:
 Get-ChildItem f:\project\dev\workspace\AnanoesisShell\.qoder\skills -Directory | Select-Object -ExpandProperty Name
 Test-Path f:\project\dev\workspace\AnanoesisShell\.qoder\skills\brainstorming\SKILL.md
 ```
-Expected: 列出 8 个技能目录；`Test-Path` 返回 `True`。
+Expected: 列出 14 个技能目录（6 个 `openspec-*` + 8 个 Superpowers）；`Test-Path` 返回 `True`。
 
 - [ ] **Step 4: 提交**
 
@@ -1467,8 +1467,8 @@ Expected: `git status` 显示 `Your branch is up to date with 'origin/main'`，w
 本次初始化视为完成，当且仅当以下全部成立：
 
 - [ ] `frontend/`、`backend/` 作为 submodule 存在且固定 `main`（`.gitmodules` 含 `branch = main`）
-- [ ] `openspec/` 与 `.qoder/commands/opsx/`（4 个命令）已生成，`openspec validate --all` 通过
-- [ ] `.qoder/skills/` 含 8 个 vendored 技能（各有 `SKILL.md`）+ `LICENSE` + `README.md`
+- [ ] `openspec/` 与 `.qoder/commands/opsx/`（6 个命令：explore/propose/apply/sync/update/archive）已生成，`openspec validate --all` 通过
+- [ ] `.qoder/skills/` 含 14 个技能目录（6 个 `openspec-*` + 8 个 vendored Superpowers，各有 `SKILL.md`）+ `LICENSE` + `README.md`
 - [ ] `.harness/` 含 `README.md` + 2 个 guides + 2 个 sensors
 - [ ] `.qoder/rules/` 含 `workflow-conventions.md` + `coding-standards.md`（`trigger: always_on`）
 - [ ] `.qoder/agents/` 含 7 个栈无关角色子智能体

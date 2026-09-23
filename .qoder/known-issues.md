@@ -248,6 +248,14 @@
 **解决方案**: 参照成熟客户端（MobaXterm/PuTTY 连接即同步、切回即校验）的做法，前端统一尺寸上报：①`TerminalTimeline` 新增 `syncSize(force)`：`proposeDimensions()` 守卫（容器隐藏/零尺寸时 fit 是 no-op，旧 cols/rows 还是默认 80x24，若照常 emit 会把远端错误重置）→ fit → 与 lastSyncedCols/Rows 去重 → emit resize；挂载、window resize、ResizeObserver（侧边栏/弹窗等容器尺寸变化不触发 window 事件）都走非 force；②首帧时机：WS 未就绪时帧被父级丢弃，故 `WorkspaceView` 在 session_id 被采纳时（首连/重连同一路径）`nextTick(() => timelineRefs.get(wsId)?.refit())` 驱动一次 force 补发；refit 同时承担切回 tab 的几何校验；③cleanup 断 observer 并重置 lastSynced 防重挂载去重吞帧。回归：前端 `TerminalTimeline.spec.ts` 4 用例（挂载 emit/refit 强制重发/隐藏容器不发/observer 去重）+ `WorkspaceView.spec.ts` 2 用例（会话采纳触发 refit/resize→通道帧）；浏览器实证：新 tab 发 `resize 97x22` → 远端 `stty size` 回 `22 98→22 97` 同步；>80 列 echo 命令按真实列数折行；`\x1b[A` 调历史长命令完整重显无错乱；隐藏 tab 切回补发且 stty 同步。修复后 #21/#22 的 tick 验证中方向键/历史均正常。
 **预防措施**: ①两端几何系统（本地渲染 vs 远端 PTY 排版）只要存在代理关系就必须有“连接即同步 + 变化事件同步 + 切回校验补发”三层，缺任何一层都会以“某个交互动作触发才暴露”的形态还债；②“去重/守卫”必须区分“无变化”与“从未成功同步过”（force 通道），否则首帧在错误时机（通道未就绪/容器隐藏）被丢后永远无人补发；③fit/proposeDimensions 在隐藏容器下返回 undefined/no-op，凡拿它的结果往外发必先校验有效性，不能拿 terminal.cols 的旧默认值充数；④历史 recall 类交互（方向键/Ctrl-R） MUST 交由远端 shell/readline 通过 PTY 回显，前端绝不自绘/重复写入渲染内容，否则两边几何必然打架。
 
+## 24. 打断 Agent 回合后再执行，模型重复思考不执行——MANUAL_BUSY 结构性死锁（拒绝提交→无完成帧→永久 busy 自锁闭环）
+
+**发现时间**: 2026-09-23（用户反馈：把 agent 对话打断后再执行，agent 返回重复之前的思考，就是不执行，附截图）
+**影响范围**: Agent 模式 PTY 调度链路：回合停止后只要在 Shell 敲过任意键（哪怕半行未回车），后续全部获准命令被拒，模型无限重试
+**根本原因**: `PtyCommandScheduler` 状态机自锁闭环——busy 的唯一置入路径是 WS input 帧 `onManualBusy()`；busy 的唯一恢复证据是 `currentCommand==null` 时的 PROMPT 帧（需命令真正执行完才出现）；而 `submitCommand` 在 MANUAL_BUSY 下**直接拒绝**不发命令→永无 PROMPT→永久 busy。被拒命令以 tool_result 失败回喂模型→模型重提同一命令→再被拒（日志铁证：curl nodejs 安装命令获准后报"当前状态 MANUAL_BUSY 不接受命令提交"→round=2 重复思考）。与 #21/#22 同族：阻塞态的恢复证据链依赖被它拒绝的事件本身。
+**解决方案**: 参照现行 ssh 客户端"注入前清行"：①busy 静默自愈过期（`DEFAULT_BUSY_EXPIRE_MS=10s`，从最后一次按键起算、连续按键重排）：到期仍 busy 且无在飞命令→Ctrl-C 清疑似半行→MANUAL_IDLE→tryDispatchNext；②busy 提交从拒绝改排队（enqueueCommand）；③busy 且无在飞命令时收到 CMD_START（用户前台程序在跑）取消自愈，防 Ctrl-C 误杀 top/vim；④PROMPT 恢复/onManualIdle/onStopping 统一取消自愈任务。RED：ManualBusySelfHeal 5 用例（7 参构造器编译失败）；GREEN 后定向 31/31、全量 771/771。浏览器终验：打断→按键→审批命令排队约 10s 后自动派发执行。
+**预防措施**: ①状态机任何"拒绝进入"的阻塞态，其恢复证据 MUST NOT 依赖被它拒绝的动作本身触发（拒绝+等待=自锁闭环），必须有独立于事件流的兜底恢复路径（超时/心跳/人工）；②"不凭静默猜测"只适用于**在飞命令完成判定**；用于**空闲终端输入权归还**时应做成有界自愈（带清行副作用）而非永久封锁；③排队+延迟执行远比拒绝+重试友好：拒绝会被回喂模型引发重试风暴，模型无法用任何策略绕过状态锁；④自愈类定时任务必须在新证据（PROMPT/CMD_START/显式 idle）到达时取消，否则恢复后窗口内误发 Ctrl-C（测试检测"未取消的旧任务"必须制造新旧窗口差，单次 sleep 越界会连正确实现一起假红）。
+
 ---
 
 **最后更新**: 2026-09-23

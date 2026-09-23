@@ -18,4 +18,4 @@
 ## 4. 收尾
 - [x] 4.1 `openspec validate --strict` 通过（变更 + 主 specs 9/9 全绿，含 D7 主 spec 改动复验）
 - [x] 4.2 归档变更并同步主 specs（command-approval「用户取消执行」THEN 终结语义、terminal-workspace 新场景「回合结束自动落位输入提示符」已合入，validate --specs 9/9 复验通过）
-- [ ] 4.3 known-issues 回写 + 前后端提交推送（含主仓库指针）
+- [x] 4.3 known-issues 回写（#25 重连时序缺口补发 / #26 取消即终结+惰性提示符空档）+ 三仓提交推送：backend dc9c7bc、frontend 89af530（含 reset-agent-memory-on-reconnect 遗留前端改动）、主仓库 a74a679（含指针）

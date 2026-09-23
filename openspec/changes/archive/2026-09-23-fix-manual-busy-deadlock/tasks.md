@@ -22,5 +22,5 @@
 
 ## 5. 收尾
 - [x] 5.1 `known-issues.md` 回写 MANUAL_BUSY 死锁条目 #24（症状/根因/修复/预防）
-- [ ] 5.2 `openspec validate --strict` 通过 → 归档变更并同步主 specs
-- [ ] 5.3 三仓提交推送（backend 修复+测试；主仓库 specs/归档/known-issues/submodule 指针）
+- [x] 5.2 `openspec validate --strict` 通过 → 归档变更并同步主 specs（MODIFIED 块已合入 terminal-workspace，复验 valid）
+- [x] 5.3 三仓提交推送（backend 869214c；前端无改动；主仓库 9ad20b2 含 specs/归档/known-issues/指针）

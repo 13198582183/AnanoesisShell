@@ -256,6 +256,22 @@
 **解决方案**: 参照现行 ssh 客户端"注入前清行"：①busy 静默自愈过期（`DEFAULT_BUSY_EXPIRE_MS=10s`，从最后一次按键起算、连续按键重排）：到期仍 busy 且无在飞命令→Ctrl-C 清疑似半行→MANUAL_IDLE→tryDispatchNext；②busy 提交从拒绝改排队（enqueueCommand）；③busy 且无在飞命令时收到 CMD_START（用户前台程序在跑）取消自愈，防 Ctrl-C 误杀 top/vim；④PROMPT 恢复/onManualIdle/onStopping 统一取消自愈任务。RED：ManualBusySelfHeal 5 用例（7 参构造器编译失败）；GREEN 后定向 31/31、全量 771/771。浏览器终验：打断→按键→审批命令排队约 10s 后自动派发执行。
 **预防措施**: ①状态机任何"拒绝进入"的阻塞态，其恢复证据 MUST NOT 依赖被它拒绝的动作本身触发（拒绝+等待=自锁闭环），必须有独立于事件流的兜底恢复路径（超时/心跳/人工）；②"不凭静默猜测"只适用于**在飞命令完成判定**；用于**空闲终端输入权归还**时应做成有界自愈（带清行副作用）而非永久封锁；③排队+延迟执行远比拒绝+重试友好：拒绝会被回喂模型引发重试风暴，模型无法用任何策略绕过状态锁；④自愈类定时任务必须在新证据（PROMPT/CMD_START/显式 idle）到达时取消，否则恢复后窗口内误发 Ctrl-C（测试检测"未取消的旧任务"必须制造新旧窗口差，单次 sleep 越界会连正确实现一起假红）。
 
+## 25. 断线重连时旧回合打断指令被时序缺口吞掉：AI 通道尚未恢复，stop_turn 帧无处可发
+
+**发现时间**: 2026-09-23（reset-agent-memory-on-reconnect 变更 D7，用户真实路径终验：下载到一半 Ctrl+C 再断连重连）
+**影响范围**: 断线重连链路：重连瞬间若 AI 通道（/ws/ai）尚未恢复，打断旧在飞回合的 stop_turn 上行帧被丢弃，旧回合在后端继续占用 inFlight/审批等待，新提问被 ERR_BUSY 阻塞
+**根本原因**: reconnectWorkspace 的“先打断旧对话再解绑”序列假设 AI 通道已连接；而三条 WS 通道重建有先后时序窗口，通道未就绪时 send 要么抛异常要么静默丢帧，打断指令没有送达保证。与 #20 第五层同族：取消/停止类指令的送达不能依赖“恰好在线”的乐观假设。
+**解决方案**: 通道已连接则直发 stop_turn；否则注册一次性 onStateChange 监听，等 connected 后补发再解绑 conversationId；需求回写主 spec「断线重连」：“若重连瞬间 AI 通道尚未恢复，打断指令 MUST 在通道恢复后补发”。回归：前端 WorkspaceView.spec 重连用例；浏览器终验（kill 后端模拟整条 WS 断连）：重连按钮→三通道重建→重置注记→新提问无 ERR_BUSY。
+**预防措施**: ①凡“必须先发生再发生”的跨通道指令，都要回答“发送时通道不在怎么办”——补发队列或状态监听是一次性还是常驻（一次性用完即退订，防重复补发）；②模拟整条 WS 断连用 kill 后端而非 kill vite：后者会触发页面 HMR full reload 破坏 SPA 状态验证前提；CDP Offline 不掐既有 WebSocket，不能用于模拟断连。
+
+## 26. 审批点「取消」AI 仍发起下一轮 + 回合结束后 ❯ 提示符要敲键才出现：两个用户实测反馈的收尾语义缺口
+
+**发现时间**: 2026-09-23（cancel-ends-turn-auto-prompt 变更，用户两条追加需求：①弹窗点取消应只结束本次对话不再发起下一轮/调工具；②AI 结束后应自动换行显示 ❯ 并把光标移过去，现状要敲键盘提示符才出现）
+**影响范围**: BUG-G：所有审批取消场景，模型收到“用户已拒绝”回喂后继续推理另想办法或重复提案，用户感知为“取消了还在转”；BUG-H：Agent 模式每次回合结束（回答完成/错误/停止/取消终结/轮次上限）屏幕停在无提示符空档，光标不落位
+**根本原因**: BUG-G——取消与超时共用 rejected() 回喂路径，拒绝事实被当作“工具结果”喂回模型，把“是否继续”的决定权交给了模型，而用户点取消是确定性的终结信号；BUG-H——❯ 提示符是惰性实现（ensureAgentPromptLine 由按键事件驱动写入），“输出结束→等待输入”的状态转换点没有任何一方主动渲染。与 #20/#24 同族：收尾语义只做了“状态复位”，没做“用户下一步体验”的闭环。
+**解决方案**: BUG-G：`ToolOutcome` 第 5 参重定义为 `userRejected`（零消费方直接重命名），`runGated` 仅 `ApprovalOutcome.CANCELLED` 置真（超时/中断保持 false 维持回喂现状）；`loopRounds` 执行循环遇取消 break（不再执行后续工具），proposals/tool 消息落库循环改按 outcomes 实际长度截断配对（原 `outcomes.get(index++)` 遍历全部 calls 会越界），落完后 `finishWithNote(CANCEL_END_NOTE, "approval_cancelled")` 终结不回喂。BUG-H：`TerminalTimeline` 新增 expose `openAgentPrompt()`（复用 ensureAgentPromptLine 幂等），`WorkspaceView` 四类触点（Final/Error 帧、stopAgentTurn 本地闭环、重连重置注记）在 Agent 模式调用；`writeToTerminal` 在提示行已打开且无草稿时先 `\r\x1b[K` 清行再写输出（防异步输出拼在 ❯ 后）；`ensureAgentPromptLine` 换行后消费 `initialPromptWritten` 标志（否则首次写入双清行把刚落的 ❯ 也抹掉——实现 GREEN 时由测试抓出）。回归：后端 `AiAgentServiceTest#userCancellationEndsTurnWithoutAnotherModelCall`（streamCallCount==1 + finishReason=approval_cancelled + 注记落库）+ 前端 TerminalTimeline 4 用例/WorkspaceView 5 用例；浏览器终验：touch 审批点取消→留痕“→ 已拒绝”+终结注记+持续观察无新回合+❯ 自动落位，落位行直接键入新问题畅通，回答完成后 ❯ 再次落位。
+**预防措施**: ①“拒绝/取消”类回喂先问该不该喂：确定性终结信号（用户主动取消）由编排层直接终结，只有需要模型改道的信息（超时/参数错）才回喂；②循环可提前 break 时，所有按下标配对遍历（`outcomes.get(index++)`）都须改为按短集合实际长度截断，否则越界或错配；③凡把 UI 元素（提示符/光标位）的呈现挂在按键事件上的实现，必须在每个“输出结束→等待输入”收尾点主动渲染，验收时不能只测按键后是否正确，还要测输出刚结束、无任何按键时的静态画面；④同一写入入口叠加多个“清占位行”标志时必须互相消费（换行离开占位行即视为已清除），双清会把刚写入的内容一并抹掉；⑤验证终端交互类改动的浏览器终验，取证前整页强刷排除 HMR 混合态。
+
 ---
 
 **最后更新**: 2026-09-23

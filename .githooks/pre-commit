@@ -1,0 +1,11 @@
+#!/bin/bash
+# pre-commit hook — 快速门禁（编译 + type-check + 单测）
+# 实际逻辑由 PowerShell 脚本实现，此处仅作 bash → ps1 桥接
+# 脚本住在主仓库根（本目录的 ../scripts）；子仓库复用同一 hooksPath 时 toplevel 不同，
+# 按本文件位置解析；门禁脚本不存在（子仓库提交）则跳过不阻塞
+script="$(cd "$(dirname "$0")/../scripts" 2>/dev/null && pwd)/hook-pre-commit.ps1"
+if [ ! -f "$script" ]; then
+  echo "[pre-commit] gate script not found for this repo, skipping"
+  exit 0
+fi
+powershell -NoProfile -ExecutionPolicy Bypass -File "$script"

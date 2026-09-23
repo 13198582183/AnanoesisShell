@@ -1,0 +1,10 @@
+#!/bin/bash
+# pre-push hook — 覆盖率门禁（mvn verify + JaCoCo check）
+# 实际逻辑由 PowerShell 脚本实现，此处仅作 bash → ps1 桥接
+# 同 pre-commit：按本文件位置解析，脚本不存在则跳过（子仓库提交场景）
+script="$(cd "$(dirname "$0")/../scripts" 2>/dev/null && pwd)/hook-pre-push.ps1"
+if [ ! -f "$script" ]; then
+  echo "[pre-push] gate script not found for this repo, skipping"
+  exit 0
+fi
+powershell -NoProfile -ExecutionPolicy Bypass -File "$script"

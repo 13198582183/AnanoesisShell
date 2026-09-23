@@ -4,6 +4,9 @@
 # Shell 脚本必须 LF（Linux 服务器执行，CRLF 会导致 `$'\r': command not found`）
 *.sh text eol=lf
 
+# Git hooks 必须 LF（Git for Windows bash 执行，CRLF 会报 command not found）
+.githooks/* text eol=lf
+
 # Windows 脚本保留 CRLF
 *.ps1 text eol=crlf
 *.cmd text eol=crlf

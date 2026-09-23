@@ -1,0 +1,502 @@
+asyncapi: 2.6.0
+
+# =============================================================================
+# AnanoesisShell WebSocket 消息契约（契约优先 / Single Source of Truth）
+# 变更：add-multi-session-agent-terminal —— V2 协议升级
+# 依据：openspec/changes/add-multi-session-agent-terminal/specs/*（8 个 spec）+ design.md D2/D3/D5
+#
+# 约定：
+#  - WebSocket 承载三类实时双向流：交互式终端 / 命令审批 / AI 流式（design D7）。
+#  - V2 新增：bind/resize 动作、订阅快照、上下文通知、审批修改/版本、事件归属字段。
+#  - 方向语义（以"后端应用"为 AsyncAPI 记录主体）：
+#      publish  = 后端向该 channel 发布（服务器 -> 客户端）
+#      subscribe = 后端从该 channel 接收（客户端 -> 服务器）
+#  - 安全：任何消息载荷 MUST NOT 携带明文凭据。
+#  - 错误码复用 REST 契约的 ErrorCode 注册表（见 openapi.yaml）。
+#  - V2 所有事件携带 session_id 与 event_seq（design D2）。
+# =============================================================================
+
+info:
+  title: AnanoesisShell WebSocket API
+  version: 0.2.0-draft   # V2 契约；冻结后改为 0.2.0-frozen
+  description: >
+    AI 驱动的远程终端 WebSocket 消息契约。V2 在 V1 基础上新增 bind/resize、订阅快照、
+    上下文通知、审批版本/修改、事件归属字段。协议版本 2。
+  license:
+    name: MIT
+
+servers:
+  ws:
+    url: ws://localhost:8080/ws
+    protocol: ws
+    description: 阶段 1 本地/内网单机 Web 的 WebSocket 端点（design.md D1/D7）
+
+defaultContentType: application/json
+
+channels:
+
+  # ---------------------------------------------------------------------------
+  # 终端通道 —— ssh-connection「交互式终端会话」「连接会话生命周期」
+  # V2 新增 bind/resize 动作与 bound/subscription_snapshot 输出类型
+  # ---------------------------------------------------------------------------
+  /terminal:
+    description: >
+      交互式终端通道。V2 协议：客户端连接后首帧提交 bind(session_id, control_token)，
+      验证后才可订阅/发送，10 秒未绑定即关闭。支持 resize 传递窗口尺寸变化。
+    subscribe:
+      operationId: receiveTerminalInput
+      summary: 后端接收终端输入（客户端 -> 服务器）
+      message:
+        $ref: '#/components/messages/terminal_input'
+    publish:
+      operationId: sendTerminalOutput
+      summary: 后端推送终端输出（服务器 -> 客户端）
+      message:
+        $ref: '#/components/messages/terminal_output'
+
+  # ---------------------------------------------------------------------------
+  # 审批通道 —— command-approval「执行前人工审批」
+  # V2 新增审批版本、修改决定、确认回执
+  # ---------------------------------------------------------------------------
+  /approval:
+    description: >
+      命令审批通道。V2 新增审批版本（version）、修改决定（modify）与确认回执。
+      重新订阅时恢复仍有效的待审批状态（command-approval「审批状态重连与竞态裁决」）。
+    publish:
+      operationId: sendApprovalRequest
+      summary: 后端推送审批请求（服务器 -> 客户端）
+      message:
+        $ref: '#/components/messages/approval_request'
+    subscribe:
+      operationId: receiveApprovalResponse
+      summary: 后端接收审批响应（客户端 -> 服务器）
+      message:
+        $ref: '#/components/messages/approval_response'
+
+  # ---------------------------------------------------------------------------
+  # AI 通道 —— model-provider「流式响应」+ ai-agent「多轮对话」「操作透明性」
+  # V2 新增 context_notice、attempt_reset
+  # ---------------------------------------------------------------------------
+  /ai:
+    description: >
+      AI 对话流式通道。V2 新增 context_notice（上下文裁剪通知）与 attempt_reset
+      （超限恢复重置）事件类型（agent-context「上下文超限的单次恢复」）。
+    subscribe:
+      operationId: receiveUserMessage
+      summary: 后端接收用户提问（客户端 -> 服务器）
+      message:
+        $ref: '#/components/messages/ai_stream'
+    publish:
+      operationId: sendAiStream
+      summary: 后端推送 AI 流式增量/工具事件（服务器 -> 客户端）
+      message:
+        $ref: '#/components/messages/ai_stream'
+
+# =============================================================================
+components:
+
+  messages:
+
+    # ------------------------- 终端输入（客户端 -> 服务器） -------------------------
+    terminal_input:
+      name: terminal_input
+      title: 终端输入
+      summary: 用户终端输入与会话控制（V2 新增 bind/resize）
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/TerminalInput'
+
+    # ------------------------- 终端输出（服务器 -> 客户端） -------------------------
+    terminal_output:
+      name: terminal_output
+      title: 终端输出
+      summary: 流式回显 stdout/stderr，V2 新增 bound/subscription_snapshot
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/TerminalOutput'
+
+    # ------------------------- 审批请求（服务器 -> 客户端） -------------------------
+    approval_request:
+      name: approval_request
+      title: 审批请求
+      summary: 副作用命令执行前的人工审批请求（V2 新增 version/command）
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ApprovalRequest'
+
+    # ------------------------- 审批响应（客户端 -> 服务器） -------------------------
+    approval_response:
+      name: approval_response
+      title: 审批响应
+      summary: 用户对审批请求的决定（V2 新增 modify/modified_command/expected_version）
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ApprovalResponse'
+
+    # ------------------------- AI 流式（双向） -------------------------
+    ai_stream:
+      name: ai_stream
+      title: AI 流式消息
+      summary: >
+        AI 对话流式消息。V2 新增 context_notice（上下文裁剪通知）与 attempt_reset
+        （超限恢复重置）类型。
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/AiStream'
+
+  schemas:
+
+    # ---------------------------- 枚举（与 REST 契约对齐） ----------------------------
+    ErrorCode:
+      type: string
+      description: 统一错误码（与 openapi.yaml 的 ErrorCode 注册表同源；V2 新增 6 个）
+      enum:
+        - validation_error
+        - not_found
+        - conflict
+        - host_unreachable
+        - auth_failed
+        - credential_protection_unavailable
+        - model_endpoint_unreachable
+        - model_endpoint_error
+        - api_key_missing
+        - internal_error
+        - session_control_required
+        - session_control_invalid
+        - transfer_quota_exceeded
+        - transfer_conflict
+        - transfer_target_changed
+        - context_budget_exceeded
+
+    EndReason:
+      type: string
+      description: 会话结束原因
+      enum: [user_disconnect, timeout, remote_close]
+
+    ApprovalDecision:
+      type: string
+      description: >
+        审批决定（command-approval）。V2 新增 modify（修改后重新审批）。
+      enum: [approve, cancel, modify]
+
+    ToolResultStatus:
+      type: string
+      description: 工具调用结果状态
+      enum: [success, rejected, execution_timeout, output_truncated, error]
+
+    AiStreamType:
+      type: string
+      description: >
+        ai_stream 事件类型。V2 新增 context_notice（上下文裁剪通知）、
+        attempt_reset（超限恢复重置；agent-context「上下文超限的单次恢复」）与
+        stop_turn（上行；用户 Ctrl+C 打断在飞回合，ai-agent「受控停止任务」）。
+      enum:
+        - user_message
+        - thinking_delta
+        - answer_delta
+        - tool_call
+        - tool_result
+        - final
+        - error
+        - context_notice
+        - attempt_reset
+        - stop_turn
+
+    ToolName:
+      type: string
+      description: 运维工具名
+      enum: [list_dir, read_file, system_info, run_command]
+
+    # ---------------------------- 终端 ----------------------------
+    TerminalInput:
+      type: object
+      description: >
+        终端输入载荷。V2 新增 action=bind（提交 session_id + control_token，
+        连接后首帧，10 秒未绑定即关闭）与 action=resize（传递 cols/rows 变化；
+        ssh-connection「远端终端尺寸同步」）。
+      required: [action]
+      properties:
+        action:
+          type: string
+          description: 输入动作（V2 新增 bind/resize）
+          enum: [open, input, close, bind, resize]
+        host_id:
+          type: string
+          format: uuid
+          description: 目标服务器 ID（action=open 时必填）
+        session_id:
+          type: string
+          format: uuid
+          description: 会话 ID（action=input/close/bind 时必填）
+        data:
+          type: string
+          description: 终端输入原文（action=input）
+        control_token:
+          type: string
+          description: 连接控制令牌（action=bind 时必填；design D2）
+        cols:
+          type: integer
+          format: int32
+          description: 终端列数（action=resize 时必填）
+        rows:
+          type: integer
+          format: int32
+          description: 终端行数（action=resize 时必填）
+
+    TerminalOutput:
+      type: object
+      description: >
+        终端输出载荷。V2 新增 type=bound（绑定成功确认）与
+        type=subscription_snapshot（重连快照，含事件尾部；design D2）。
+        所有输出事件携带 session_id 与 event_seq（V2）。
+      required: [type]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: 会话 ID
+        event_seq:
+          type: integer
+          format: int64
+          description: 事件单调递增序号（V2；design D2）
+        type:
+          type: string
+          description: 输出事件类型（V2 新增 bound/subscription_snapshot）
+          enum: [data, error, closed, bound, subscription_snapshot]
+        stream:
+          type: string
+          description: 数据流类别（type=data 时存在）
+          enum: [stdout, stderr]
+        data:
+          type: string
+          description: 流式输出数据（type=data）
+        error_code:
+          allOf:
+            - $ref: '#/components/schemas/ErrorCode'
+          description: 错误码（type=error）
+        message:
+          type: string
+          description: 面向用户的错误说明（type=error）
+        end_reason:
+          allOf:
+            - $ref: '#/components/schemas/EndReason'
+          description: 会话结束原因（type=closed）
+        # V2 新增：订阅快照字段
+        snapshot:
+          type: object
+          description: >
+            重连快照（type=subscription_snapshot；design D2）。包含当前屏幕状态
+            与可用事件尾部，缓冲默认 1 MiB。缺口明确显示输出可能缺失。
+          properties:
+            screen_buffer:
+              type: string
+              description: 当前屏幕缓存内容
+            event_tail:
+              type: array
+              description: 可用事件尾部
+              items:
+                type: object
+                properties:
+                  event_seq:
+                    type: integer
+                    format: int64
+                  type:
+                    type: string
+                  data:
+                    type: string
+            has_gap:
+              type: boolean
+              description: 是否存在事件缺口（不伪造完整恢复）
+
+    # ---------------------------- 审批 ----------------------------
+    ApprovalRequest:
+      type: object
+      description: >
+        审批请求载荷（command-approval）。V2 新增 version（审批版本快照）与
+        command（便捷展示字段，等价于 tool_params.command）。
+        所有审批事件携带 session_id 与 event_seq（V2）。
+      required: [approval_id, conversation_id, host_id, tool_name, tool_params, ai_analysis, version]
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+          description: 所属连接实例 ID（V2）
+        event_seq:
+          type: integer
+          format: int64
+          description: 事件序号（V2）
+        host_id:
+          type: string
+          format: uuid
+        host_label:
+          type: string
+        tool_name:
+          allOf:
+            - $ref: '#/components/schemas/ToolName'
+        tool_params:
+          type: object
+          additionalProperties: true
+        command:
+          type: string
+          description: 待执行命令（便捷展示字段，等价于 tool_params.command）
+        ai_analysis:
+          type: string
+        version:
+          type: integer
+          format: int32
+          description: 审批版本快照（V2；修改产生新版本，旧版本不可执行；design D5）
+        timeout_seconds:
+          type: integer
+          format: int32
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    ApprovalResponse:
+      type: object
+      description: >
+        审批响应载荷（command-approval）。V2 新增 decision=modify（修改后重新审批）、
+        modified_command（修改后的命令）与 expected_version（确认基于的版本；design D5）。
+      required: [approval_id, decision]
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+        decision:
+          $ref: '#/components/schemas/ApprovalDecision'
+        comment:
+          type: string
+          nullable: true
+          description: 用户备注（可选）
+        # V2 新增字段
+        modified_command:
+          type: string
+          description: 修改后的命令（decision=modify 时必填；design D5）
+        expected_version:
+          type: integer
+          format: int32
+          description: >
+            确认基于的审批版本（防止按钮自行替换命令参数后沿用旧批准；design D5）
+
+    # ---------------------------- AI 流式 ----------------------------
+    AiStream:
+      type: object
+      description: >
+        AI 流式消息载荷。V2 新增 context_notice（上下文裁剪通知；agent-context
+        「请求总 token 预算」）与 attempt_reset（超限恢复重置；agent-context
+        「上下文超限的单次恢复」）。所有事件携带 session_id 与 event_seq。
+      required: [type, conversation_id]
+      properties:
+        type:
+          $ref: '#/components/schemas/AiStreamType'
+        conversation_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+          description: 所属连接实例 ID（V2）
+        event_seq:
+          type: integer
+          format: int64
+          description: 事件序号（V2）
+        message_id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        thinking_mode:
+          type: boolean
+        content:
+          type: string
+        segment:
+          type: string
+          enum: [thinking, answer]
+        tool_call:
+          allOf:
+            - $ref: '#/components/schemas/ToolCallEvent'
+        error_code:
+          allOf:
+            - $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        finish_reason:
+          type: string
+          nullable: true
+        # V2 新增：上下文通知字段
+        context_notice:
+          allOf:
+            - $ref: '#/components/schemas/ContextNotice'
+          description: 上下文裁剪通知（type=context_notice）
+        # V2 新增：恢复重置字段
+        attempt_id:
+          type: string
+          format: uuid
+          description: 恢复尝试 ID（type=attempt_reset；design D7）
+        attempt_number:
+          type: integer
+          format: int32
+          description: 恢复尝试次数（type=attempt_reset；首次恢复为 1）
+
+    ContextNotice:
+      type: object
+      description: >
+        上下文裁剪通知（agent-context「请求总 token 预算」/「有界工具输出与来源标记」）。
+        告知前端上下文已被缩减，不暴露隐藏指令或凭据。
+      properties:
+        candidate_count:
+          type: integer
+          format: int32
+          description: 裁剪前候选条数
+        retained_count:
+          type: integer
+          format: int32
+          description: 保留条数
+        estimated_tokens:
+          type: integer
+          format: int32
+          description: 估算 token 数
+
+    ToolCallEvent:
+      type: object
+      description: >
+        工具调用事件明细。V2 新增 call_id/command_id 归属字段。
+      properties:
+        tool_name:
+          $ref: '#/components/schemas/ToolName'
+        tool_params:
+          type: object
+          additionalProperties: true
+        auto:
+          type: boolean
+        approval_id:
+          type: string
+          format: uuid
+          nullable: true
+        result_status:
+          allOf:
+            - $ref: '#/components/schemas/ToolResultStatus'
+        result:
+          type: string
+          nullable: true
+        # V2 新增字段
+        call_id:
+          type: string
+          format: uuid
+          description: 工具调用标识（V2；design D2/D5）
+        command_id:
+          type: string
+          format: uuid
+          description: 关联命令执行 ID（V2）
+        run_id:
+          type: string
+          format: uuid
+          description: 关联 Agent 运行 ID（V2）

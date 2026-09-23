@@ -74,5 +74,157 @@
 
 ---
 
-**最后更新**: 2026-09-21
+## 5. 审批弹窗修改命令（modify）后端未消费，落远端的仍是提案原文
+
+**发现时间**: 2026-09-22
+**影响范围**: 审批链路 `ApprovalGate.modify` → AI 工具执行（`AiAgentService.runGated`）
+**症状**: 用户在审批弹窗上修改命令后点批准，审计日志 `final_command` 已记录新版本，但 SSH 远端实际执行的是 AI 提案的原命令（端到端实测 `cat` 回读文件内容证实）
+**根本原因**: `modify` 只写内存 Entry.modifiedCommand + 审计行；而 `decide()` 后 Entry 从 pending 移除，执行方 await 返回后拿到的局部变量 `command` 永远是提案原文，modifiedCommand 没有任何消费出口。
+**解决方案**: 新增 `ApprovalGate.effectiveCommand(approvalId, fallback)`（内存 Entry 优先，已销毁则回读审计行 `final_command`，再回退原文）；`runGated` 批准后经其回读再执行。裁决后 `final_command` 不可变（claimed 拦截后续修改），审计行回读天然无竞态。
+**预防措施**: 任何「后置修改 + 前置消费」的字段必须验证消费链路端到端存在（用 FakeSshServer.execCommands() 断言落远端的真实命令），不能只看写入侧成功。
+
+---
+
+## 6. /ws/approval 与 /ws/ai 是广播通道，多 tab 审批/AI 输出全端串台
+
+**发现时间**: 2026-09-22
+**影响范围**: 工作区多 tab（同一浏览器开多个 workspace）的审批弹窗、徽章、AI 流式输出
+**症状**: 在 tab B 发起的高风险命令，审批弹窗同时出现在 tab A，两个 tab 徽章都 +1；AI 回答也可能写进非发起 tab 的终端
+**根本原因**: 后端对 `/ws/approval`、`/ws/ai` 的所有连接推送全部帧（广播语义）；前端每条通道都收到全部帧且无归属过滤；叠加会话 ID 曾为全局单一 ref，多 tab 复用同一 conversation。
+**解决方案**: 前端按契约中 required 的 `conversation_id` 做归属过滤（`msg.conversation_id !== ws.conversationId` 则丢弃）；会话改为每 tab 独立创建并持久化在 store 的 workspace 条目上；AI 流式标志/段落状态按 wsId 隔离。
+**预防措施**: 接入任何新 WS 通道前先确认后端是广播还是按会话定向；广播通道的前端消费端 **必须** 带归属过滤（回归用例见 `WorkspaceView.spec.ts` 归属过滤段）。
+
+---
+
+## 7. 共享单例 xterm + 切 tab reset 缓冲区，审批留痕与用户输入被抹掉
+
+**发现时间**: 2026-09-22
+**影响范围**: 工作区多 tab 终端历史（命令留痕红线：命令无论是否执行都必须按时间顺序沉淀在 xterm）
+**症状**: 审批挂起时切到其它 tab 再切回，该 tab 的用户输入回显、「$ 命令 ⏳待审批」留痕、AI 思考行全部消失，只剩切回之后新写入的内容
+**根本原因**: 所有 tab 共享一个 TerminalTimeline/xterm 实例，靠 `watch(activeSessionId)` 里 `terminal.reset()` 隔离历史；reset 会清空整个 buffer，而后台 tab 的写入又被 isActive 过滤丢弃——历史既被抹掉又无处可存。
+**解决方案**: 改为 per-tab 独立 TerminalTimeline 实例（WorkspaceView 按 workspaces `v-for` + `v-show` 切换，函数 ref 收集到 `timelineRefs` Map，写入统一经 `writeToWs(wsId, ...)`）；后台 tab 照常写自己的隐藏 buffer（xterm write 不依赖可见性）；切回时调新暴露的 `refit()`（fit + refresh）恢复尺寸。回归用例：「后台 tab 隔离回归」断言写入路由到所属实例。
+**预防措施**: 多连接实例场景禁止共享带状态的渲染单例；「切换时 reset」等于丢数据，需用隔离实例而非时序清理。
+
+---
+
+## 8. SFTP listDir 未回填 mtime，文件站修改时间列全显示「-」
+
+**发现时间**: 2026-09-22
+**影响范围**: `/api/sessions/{id}/files` 响应与前端文件站「修改时间」列
+**症状**: 目录/文件的 mtime 全为 null，UI 上「-」；size 正常
+**根本原因**: `SftpService.toFileEntry` 从未调用 `setMtime`（文件曾因环境事故重建丢失该字段）；SSHJ readdir attrs 在 OpenSSH 服务器实际携带完整属性。
+**解决方案**: `toFileEntry` 补 `attrs.getMtime() > 0` 时转 `OffsetDateTime`（UTC epoch 秒）回填。
+**预防措施**:  DTO 映射函数改动后抽查「每个目标字段是否有真实值」，用 API 响应取证而非只验 200。
+
+---
+
+## 9. 沙箱内 Get-NetTCPConnection 看不到宿主机监听，重启服务误判成功
+
+**发现时间**: 2026-09-22
+**影响范围**: Windows 下用沙箱 shell 重启/验证常驻服务（后端 spring-boot:run）
+**症状**: 重启脚本报「端口无监听 → 启动成功」，实际旧进程仍存活，新代码未生效（浏览器复测行为与旧版一致）
+**根本原因**: 沙箱环境的 `Get-NetTCPConnection`/`Test-NetConnection` 存在宿主机进程盲区（误报 no-listener）；另外 PowerShell 5.1 会把 mvnw 的 `-Dxxx=yyy` 裸参数拆成 lifecycle phase 报错，导致新进程根本没起来。
+**解决方案**: 用 `netstat -ano`（需宿主机权限）确认真实监听与 PID，`taskkill /F /PID` 杀旧进程；`-D` 参数整体用引号包住：`.\mvnw.cmd spring-boot:run "-Dspring-boot.run.jvmArguments=-Dfile.encoding=UTF-8"`。
+**预防措施**: 重启服务后必须验证 **PID 变化 + 日志 Started 行**，两者缺一不视为重启成功；行为差异（端到端复测）是最强证据。
+
+---
+
+## 10. chrome-devtools take_screenshot 频繁超时，用 a11y 快照 + DOM 度量替代取证
+
+**发现时间**: 2026-09-22
+**影响范围**: 浏览器端到端验证的视觉取证环节
+**症状**: `take_screenshot`（png/jpeg/webp、inline/filePath）多次调用返回 40504 超时；filePath 模式还可能因 workspace roots 配置拒绝合法路径
+**根本原因**: 截图通道对大页面/低质量参数仍不稳定，疑与 CDP 截图往返超时配置有关（偶发可用，不可依赖）
+**解决方案**: 取证改用 `take_snapshot`（a11y 树结构确认）+ `evaluate_script` 轮询断言（getBoundingClientRect/scrollWidth/computedStyle 做布局度量，buffer 行文本做内容断言）；xterm 内容读 `.xterm-rows > div` 逐行 textContent。
+**预防措施**: 浏览器验证优先写「断言型」脚本（返回布尔+关键数据）而非依赖截图；截图作为可选补充、失败不阻塞流程。
+
+---
+
+## 11. 审批链断链 sessionId：获准命令与只读工具回落 exec，Shell 的 cwd/env 不继承
+
+**发现时间**: 2026-09-22
+**影响范围**: Shell → Agent 状态交接（design D3：所有 Agent 远端工具经同一持久 Shell 执行）；审批后命令输出不再回流终端
+**症状**: 用户在 Shell 模式 `cd /var/log && touch marker` 后切 Agent 提问，AI 提案 `pwd && ls marker` 批准执行后回答「当前目录 /root、文件不存在」，且终端看不到命令输出回流
+**根本原因**: 能力层早已就绪（`ApprovedCommandRunner.run(..., sessionId)` 4 参重载 + `AgentTools` 读 `CTX_SESSION_ID`），但路由信息链路上三处断裂：`TurnRequest` 没有 sessionId 字段 → `AiWebSocketHandler` 接到带 `session_id` 的帧无处可存 → `runTurn` 构造的 toolContext 不含 `CTX_SESSION_ID` → `runGated` 只能调 3 参 `runner.run`（sessionId=null 回落 exec）；前端 `sendAiMessage` 也从未带 `session_id`。组件各自正确，接缝全错。
+**解决方案**: 端到端接通链路——`TurnRequest` 加 `@Nullable UUID sessionId`（保留 3 参兼容构造器）；handler 透传 `frame.sessionId()`；`AiAgentService` 用 `buildToolContext` 注入 `CTX_SESSION_ID`，`runGated` 增 toolContext 参改调 4 参 `runner.run`；前端 `user_message` 载荷带 `session_id: ws.sessionId`。回归用例：`approvedCommandIsRoutedThroughSharedPty` / `readOnlyToolIsRoutedThroughSharedPty`（mock PtyCommandGateway 断言 submit 被调且 exec 通道零增量）。
+**预防措施**: 跨层路由字段（新增契约字段 → 前端发送 → handler 解析 → service 透传 → 执行层消费）必须在同一变更里端到端接通并各有一道断言；只实现能力层（重载/工具读 context）不算完成，验收时 MUST 含「在用户 Shell 里 cd 后 Agent 命令能看到该目录」这类交接实测。
+
+## 12. Shell 集成组件全绿但从未接线：scheduler 恒为 null，PTY 路径永久回落 exec
+
+**发现时间**: 2026-09-22
+**影响范围**: 修复 #11 第一段链路后，获准命令仍走 exec 通道，cwd/env 依旧不继承；日志取证 `PTY 路径不可用，回落 exec 通道`
+**根本原因**: 5.x 组件（ShellIntegration / ShellFrameDecoder / PtyCommandScheduler / PtyCommandGateway）单测全绿，但主代码**零处**调用 `setScheduler()` / `new ShellIntegration(...)`——运行时 `runtime.scheduler()` 恒为 null，gateway 抛「会话未安装 Shell 集成」后永远回落。与 #11 同源教训：组件各自正确，接缝全错；「类存在且测试绿」不等于「被装配」。
+**解决方案**: 新建 `ShellIntegrationInstaller.install()` 静态接线（构造集成→包装输出监听器剥帧/采集→返回 scheduler + 包装 listener）；`SshTerminalService.open()` 用 `RelayOutputListener`（volatile target）解「createTerminal 先要 listener、包装要先有 terminal」的鸡生蛋问题，安装失败 catch 降级人工终端；`PtyCommandScheduler.handlePrompt` 补 busy→idle 恢复路径（人工命令结束后 PROMPT 帧是唯一证据，无此路径则永久 busy 拒掉所有获准命令）；`TerminalWebSocketHandler.forward` 在用户真实键入时调 `onManualBusy()`；`SshProperties.shellType` 新增配置（默认 bash，第一阶段仅支持 Bash 4+）。
+**预防措施**: ①接线类改动的回归验收必须包含「grep 主代码确认装配点存在」；②非 bash 的测试替身（FakeSshServer）必须把 `shellType` 配成非 bash，否则钩子安装代码被远端当命令逐行回显 `command not found`，污染 open 回执帧的顺序断言（`install()` 对不支持类型不向 PTY 写任何字节，降级行为由 `ShellIntegrationInstallerTest` 覆盖）。
+
+## 13. Bash 集成安装代码用子 shell `( ... )` 包裹：钩子设置在父交互 shell 全部丢失，调度器永久 MANUAL_BUSY
+
+**发现时间**: 2026-09-23（接线修复后浏览器终验，known-issues #12 的后续层）
+**影响范围**: 获批命令与只读工具仍被拒/回落 exec——日志铁证 `当前状态 MANUAL_BUSY 不接受命令提交` + `PTY 路径不可用，回落 exec 通道`；远端真实 bash 环境下 PROMPT/CWD 帧一次都未出现
+**根本原因**: `ShellIntegration.generateBashIntegrationCode` 用 `( ... )` 子 shell 包裹安装语句（原始动机是「防止安装过程触发 DEBUG trap」）——但 bash 会为子 shell 新建进程，内部的 `PROMPT_COMMAND=...`/`trap ... DEBUG` 随子 shell 退出丢失，父交互 shell 从未挂上钩子。单测盲区：所有组件测试只断言生成代码**包含**某些子串，从不验证「在真实 shell 中是否生效」；端到端测试手喂帧绕过了安装代码本身。日志中 `Frame has too few fields: 0;root@localhost:~` 其实是 CentOS PS1 的 OSC 0 窗口标题序列被 decoder 正常丢弃，属噪声而非帧格式 bug。
+**解决方案**: 改用花括号组命令 `{ ... }`（在当前 shell 内执行，设置真实生效）；安装语句先于 trap 设置完成，无 DEBUG 触发风暴风险；新增回归用例 `integrationCodeAppliesToCurrentShellNotSubshell` 断言首尾行必须是 `{`/`}` 而非 `(`。
+**预防措施**: 约束远端 shell 的生成代码，验收 MUST 包含「代码在当前交互 shell 生效」的结构性断言（组命令 vs 子 shell、变量作用域回写），不能只做子串包含式断言；关键闭环（如 busy→idle 恢复）必须有真实环境的端到端冒烟（浏览器/测试服务器），单测全绿不代表接缝成立。
+
+---
+
+## 14. 首次连接终端刷屏安装代码回显：tty ECHO 在字节到达瞬间回显，与后续执行无关
+
+**发现时间**: 2026-09-23（#13 修复后浏览器终验，用户附截图反馈「每次第一次连接都会打印这些东西」）
+**影响范围**: 所有 Bash 会话建立（open 接线）时的用户视觉体验；多行安装代码还触发 readline `>` 续行提示
+**根本原因**: 两层叠加。①tty 的 ECHO 由驱动在字节到达瞬间实时处理，bash 尚未执行就无法取消；把 `stty -echo` 与安装代码合并同一次写入仍会被回显（字节已进 tty 线缓冲）。且 `>` 续行提示由 bash 进程自己打印，与 echo 开关无关——多行代码即使静默回显也会留下满屏 `>`。②（后补，真根因）生成的钩子代码里 printf 写成四反斜杠源码（Java 字符串值 = bash 代码中的 `'\\033]'`），bash printf 把 `\\` 解释为**字面反斜杠**，输出的是文本 `\033]1337;...` 而非真实 ESC(0x1B) 字节——于是 ShellFrameDecoder 永远收不到帧（服务端闸门只能靠 5s 兜底开→首连白屏「连接中...」）、字面帧文本剥不掉直接泄漏到用户屏幕（用户截图投诉的正是这个）。此前单测全绿是因为测试直接喂 `\u001B` 真实 ESC 给 decoder，从未验证**生成代码的转义层级**。
+**解决方案**: ①三段式静默安装（`ShellIntegration.install()`）：先单独发 `stty -echo\n` 并有限等待其执行（250ms），再写安装代码，最后 `stty echo\n`；同时 `generateBashIntegrationCode` 把钩子设置压缩为**单行**（拼接规则：上行尾为 `{`/`then`/`else` 用空格，其余用 `; `）。②服务端输出闸门（`ShellIntegrationInstaller`）：先经 `relay::switchTo` 回调把输出链切到闸门再写安装代码，吞掉首个有效 1337 帧前的一切转发（含 readline 回显），5s 兜底强制开闸。③printf 转义修正为源码双反斜杠（Java 字符串值 = bash 代码单反斜杠 `\033`，printf 正确产出 ESC 字节）。回归用例：`installSilencesPtyEchoAroundIntegrationCode`（三次独立写入）、`integrationCodeIsSingleLine`、`framePrintfUsesSingleBackslashEscape`（锁转义层级：contains `printf '\033]1337;` + 禁止 `'\\033]` 形态）。
+**预防措施**: ①向真实 tty 写多字符序列前区分三层回显机制：驱动 ECHO（字节到达即回显）/ readline 续行提示（bash 进程打印）/ 程序自输出；静默只能控制第二三层，第一层必须先终止其生效再写正文。②凡「Java 字符串 → 生成 shell 代码 → shell 解释器再解析」的多层转义链，测试必须断言**生成代码文本本身**的转义形态，而不能只喂最终期望字节给消费者；必要时在真实终端做端到端冒烟。③编辑含反斜杠+引号逃逸的 Java 源行时 SearchReplace 有损（多次破坏 `\"`），须用 PowerShell 字节级重写并以 `-replace '\\','!'` 校准显示。对远端 shell 的生成代码验收必须包含「在真实终端观察无噪声」的端到端冒烟，不能只看字节序列断言。
+
+## 15. 会话终结后 sessionId 残留：输入持续路由到死会话造成错误风暴，且无重连入口
+
+**发现时间**: 2026-09-23（浏览器终验：硬刷新后活动终端 152 行「[错误] 终端会话不存在或已结束」刷屏）
+**影响范围**: 空闲回收/远端关闭/后端重启后的前端体验；断线后功能死路（无任何重连路径）
+**根本原因**: 三处叠加——①`WorkspaceView` 收到 closed 帧或 WS onclose 后只改状态不清 `sessionId`，`handleShellInput` 的 guard（`ws.sessionId && channel.connected`）仍放行，字节继续带死会话 id 发送，后端 `requireOwn` 逐帧回错；②会话 id 采纳逻辑 `if (msg.session_id && !state.sessionId)` 只认第一个 id，即使重连成功新会话 id 也被丢弃；③`onStateChange` 回调参数名 `state` 遮蔽外层 `state` 闭包，无法清理已采纳 id；④产品层面缺少断线重连入口（对标 MobaXterm 按 r / FinalShell 按钮）。
+**解决方案**: closed 帧与 WS disconnected 两条路径同构处理：清 runtime/store 的 sessionId + 置终态 + 写重连指引行；会话 id 改为恒更新（`msg.session_id !== runtime.sessionId` 即采纳并置 connected）；新增 `TerminalTimeline.disconnected` prop 拦截 r/R 键 emit reconnect（其余输入丢弃），`WorkspaceView.reconnectWorkspace()` 双路径：通道仍连→直发 open，通道已断→connect() 后由状态回调自动补 open；工具栏终态才显示「重连」按钮。故意**不做自动重连**：会话重建丢 cwd/运行中程序，上下文切换必须用户显式确认。回归：`WorkspaceView.spec.ts` 断线重连 4 用例 + `TerminalTimeline.spec.ts` 拦截 4 用例。
+**预防措施**: 任何「标识符生命周期小于通道生命周期」的字段（会话 id/令牌），其失效事件（closed/onclose/error 终态）处理必项包含：清空失效值 + guard 拦截后续使用 + 用户可见的恢复入口；错误刷屏类用户反馈先取证「哪个旧 id 还在被使用」，而不是先改文案。
+
+## 16. 切换页面卸载 WorkspaceView 销毁全部终端运行时：回跳后历史与 cwd 全丢
+
+**发现时间**: 2026-09-23（浏览器终验：cd 后切到设置页再回跳，终端空白且会话重建）
+**影响范围**: 工作区 ↔ 服务器列表/设置页任意导航往返；所有已连 tab 的终端历史、cwd、运行中程序
+**症状**: 回跳 workspace 后原有 tab 终端变空白，重新自动建立全新 shell（cwd 回到登录目录），用户输入历史与远端进程全部丢失
+**根本原因**: `runtimeMap`/`timelineRefs` 定义在 `<script setup>` 内 = **组件实例级**状态；vue-router 切页默认卸载组件，触发 `onBeforeUnmount` 销毁全部 WS 运行时，后端按 USER_DISCONNECT 回收会话。之前修过的“切 tab 丢历史”（#7）只覆盖了 tab 切换，未覆盖**路由切换**这一层。
+**解决方案**: App.vue 的 `<router-view>` 改 `v-slot` + `<KeepAlive :include="['WorkspaceView']">` 包裹；WorkspaceView 加 `defineOptions({ name: 'WorkspaceView' })`（include 按 name 匹配）；`onActivated` 里对活动 tab 调 `refit()` 恢复尺寸。回归：App.spec KeepAlive 用例（需经 VTU `global.components.RouterView` 注册 stub 并传 slot props，vi.mock 导出对象不解析模板 kebab 组件）+ WorkspaceView.spec name 断言。
+**预防措施**: 持有长连接/不可序列化运行时（xterm、WS、定时器）的视图，必须在设计期就回答“路由切走时这些状态去哪里”；单例 store 存了元数据不够，组件实例级 Map 同样会被卸载销毁。测试 VTU 挂载含 `<router-view>` 插槽的组件时，stub 必须经 `global.components` 注册而非只改模块导出。
+
+## 17. Agent 不知道用户终端当前目录：人工 cd 的 CWD 帧被丢弃，提示词无 cwd 注入，“当前目录”全答 /
+
+**发现时间**: 2026-09-23（浏览器终验：cd /tmp/acceptance 后问“列出当前目录文件”，AI 回答“当前目录 /”；日志铁证 `list_dir: path=/`）
+**影响范围**: Agent 模式所有带“当前目录/这个目录”语义的提问；list_dir/read_file 默认路径推断
+**根本原因**: 两层断链叠加——①`PtyCommandScheduler.handleCwd` 只在 `currentCommand != null` 时记录 lastCwd（Agent 命令结果），人工 cd 产生的 cmdId=0 CWD 帧被直接丢弃，会话级 cwd 无处可查；②`AgentSystemPrompt.build` 根本没有 cwd 参数，模型只能凭默认猜测 /。与 #11/#12 同源教训：帧链路本身工作（OSC title 日志证明钩子在发帧），但消费端只服务了 Agent 命令自己的那一层。
+**解决方案**: ①scheduler 加 `volatile sessionCwd`，handleCwd **无条件**更新（人工与 Agent 帧都是真实状态）+ getter；②`AgentTools.sessionCwdOf(sessionId)` 经现有 `ptyGateway.findScheduler` 查找链取 cwd（无网关/未命中安全返回 null）；③`AgentSystemPrompt.build` 加 4 参重载（cwd 非空白才渲染“当前工作目录”段，未知不渲染避免空路径误导），3 参委托保持既有调用兼容；④`AiAgentService` 存 agentTools 字段，runTurn 与上下文恢复重建提示词两处都注入（恢复路径经 `sessionCwdOfContext(toolContext)` 与首轮共用 sessionId 来源）。回归：`manualCwdFrameUpdatesSessionCwd` / `promptInjectsSessionCwdWhenKnown` / `promptOmitsCwdSectionWhenUnknown` / `sessionCwdOfRoutesToTheSessionScheduler`。
+**预防措施**: 凡是“用户动作产生的状态帧”（cd/export/环境变更），消费端不能只服务“系统自己发起的命令”那一层；向模型注入环境上下文时，未知值必须**不渲染**而非给空串，否则模型会把空路径当事实。
+
+## 18. KeepAlive 切页后 lastActiveId 被回退值污染：侧栏回跳落到首个 tab 而非离开前的 tab
+
+**发现时间**: 2026-09-23（浏览器终验：ws-2 活跃时切设置页再点侧栏「工作区」，回跳到 ws-1）
+**影响范围**: 多 tab 工作区 + 任意跨页导航往返；侧栏「工作区」回跳入口
+**根本原因**: #16 引入 KeepAlive 的次生问题 —— 缓存的 WorkspaceView 内 `watch(effectiveActiveId)` 不随离开路由而停；路由切到 /settings 后 `route.params.workspaceId` 变 undefined，`effectiveActiveId` 的「参数不匹配回退首个 tab」分支返回 ws-1，watcher 把回退值当成真实活跃 tab 登记进 `setLastActive`，覆盖掉 ws-2。登记侧未区分「回退」与「真在看」。
+**解决方案**: 登记守卫 `if (id && routeWorkspaceId.value)`：仅当前确实停在 /workspace/:id 路由（参数非空）才登记；参数无效但停在 workspace 页时仍登记回退的首 tab（保留原意）。回归：WorkspaceView.spec 新增「离开 workspace 路由不得覆盖 lastActiveId」（需把 vue-router mock 的 useRoute 改为共享 reactive 对象才能触发 computed 重算）；浏览器双向复验（ws-2 往返、切 ws-1 后往返均正确）。
+**预防措施**: 给 KeepAlive 缓存组件内「从路由派生的状态登记」加守卫前，先问：路由离开时这个派生值会变成什么？回退默认值与真实状态同名时（都是“首个 tab id”），必须在登记入口用路由在位性区分，而不是靠消费端事后过滤。
+
+## 19. 首连同一行出现两个提示符：三段式静默安装分次发送，开闸后每条命令各弹一个 prompt（附带修复：登录 banner 竞态泄漏）
+
+**发现时间**: 2026-09-23（用户浏览器实测：首次连接终端显示 `[root@localhost ~]# [root@localhost ~]#`，后续连接正常）
+**影响范围**: 所有 bash 会话首连必现双 prompt；登录 banner 泄漏为概率性竞态（首连握手最慢时命中）
+**根本原因（真根因，浏览器 xterm buffer 取证实证）**: `ShellIntegration.install()` 旧三段式分次发送（`stty -echo\n` → sleep → 钩子 code\n → sleep → `stty echo\n`）。钩子 code 执行完 PROMPT_COMMAND 弹出**首个提示帧**→ 服务端闸门开闸 + prompt ① 放行；随后 `stty echo` 又是一条命令、bash 执行完再弹 prompt ②——两个 prompt 都在开闸后送达，同一行双提示符。stty 两行的 readline 回显发生在首帧前被闸门吞掉，所以看不到命令文本。「后续连接正常」是旧观察偏差（同一逻辑每条连接都在跑）。（排查插曲：第一层假设曾锁定为“登录 prompt 抢在闸门 `switchTo(gate)` 接入前经原监听器泄漏的竞态窗口”——该窗口确实存在且已修，但修复后浏览器实测 buffer 仍是 2 个 prompt 且**无 Last login banner**，恰铁证登录输出从未泄漏、它不是双 prompt 成因。）
+**解决方案**: ①（双 prompt 真修复）`ShellIntegration.install()` 合并为**单条命令行**一次性发送：`stty -echo; {钩子code}; stty echo\n` —— 整行只触发一次 PROMPT_COMMAND → 恰好一个 prompt；回显抑制语义保留在同一行内（行首 stty -echo、行尾 stty echo）。回归：`ShellIntegrationTest.installSendsHooksAsSingleCommandLine`（hasSize(1) + 单行断言）。②（竞态防御保留）新增 `PreInstallMuteListener`（吞 stdout/stderr、**透传 onClosed**）：bash 会话作为 relay 初始监听器，把保护起点提前到第一个字节，封死登录 banner/首 prompt 抢在闸门接入前泄漏的窗口；`installShellIntegration` 的 catch 补 `relay.switchTo(listener)` 兜底，防安装异常把终端永久静音；非 bash 不装静音（banner 照常透传）。回归：`PreInstallMuteListenerTest` 2 用例 + `SshTerminalServiceTest` banner 集成 2 用例（FakeSshServer 新增可注入 loginBanner）。
+**预防措施**: ①向同一 PTY 分次写入多条命令行，每条都会触发一次 PROMPT_COMMAND/提示帧——凡“安装/配置序列”都应与钩子代码合并为单行一次发送，而不是依赖 sleep 拼时序。②任何“先透传、后切保护链”的输出接线都有启动竞态窗口，治理点是让初始链就是保护链（默认拒绝），而不是指望“切得够快”。③测试替身若只在输入后出字节，永远测不出“启动即输出”类竞态，需可注入的启动期主动输出（loginBanner 同法）。④假设必须被实验证伪前不得回写文档为“根因”——本条第一层假设通过了单测与全量回归，却在浏览器实证中被打脸，xterm 内存 buffer 取证（promptCount + 有无 banner 行）才是终判。
+
+## 20. Agent 回合无法 Ctrl+C 打断：后端 stop() 死代码零调用，五层链路全断
+
+**发现时间**: 2026-09-23（用户反馈：Agent 对话中按 Ctrl+C 不能像 Shell 一样打断正在跑的程序）
+**影响范围**: Agent 模式所有长回合（多轮工具循环/大模型慢响应）用户只能干等，无逃生口
+**根本原因**: 五层断链叠加——①契约层：`asyncapi.yaml` 的 AiStreamType 没有任何停止上行类型，前端无处可发；②后端入口层：`AiWebSocketHandler.handleTextMessage` 只认 `user_message`，其余帧直接丢弃；`AiAgentService.stop(UUID)`（中断 worker → InterruptedException → final+停止注记）自实现以来**零调用**，是潜伏死代码；③前端层：Agent 模式 Ctrl+C（`\x03`）只被 `handleAgentKey` 当作“取消输入草稿”，从不区分回合是否在飞；④异常包装层（接通后浏览器实测新暴露）：stop() 确实中断了 worker（日志铁证），但 langchain4j 阻塞流式读把 InterruptedException 包成 `ReactiveException`（RuntimeException 子类）抛出，`runTurn` 的 `catch (InterruptedException)` 分支永远接不到，掉进 `catch (RuntimeException)` 被误分类成 `model_endpoint_error`——用户 Ctrl+C 瞬间看到的不是停止注记而是红字报错；⑤中断标志残留层（第四层修复后 run9 实测再暴露）：reactor 抛出包装异常时会**恢复线程中断标志**，而收尾 `finishWithNote` 的帧发送（Tomcat WS blocking send）就跑在同一被标志污染的 worker 线程上——第一帧发送即失败、连接 1006，停止注记**永远发不出**；旧设计“复位统一由后端 final 帧承担”在“中断自身杀死传输链”的场景下不成立。与 #11/#12/#17 同源教训：能力模块已存在但没接线，单测各测各层永远全绿，接缝处无人验证。
+**解决方案**: 五层全部接通：①契约新增上行 `stop_turn`；②`AiStreamFrame.Type` 枚举**末尾**加 `STOP_TURN`（避免中间插入移动 ordinal），handler 新增 `handleStopTurn`（缺 conversation_id 忽略；未命中在飞回合静默——停止是幂等通知，不返错误帧）；③`ws-messages.ts` 加 `StopTurn`；`TerminalTimeline` 新增 `generating` prop，生成态 Ctrl+C 写 `^C` 留痕 + emit `agentStop`；④`runTurn` 的 `catch (RuntimeException)` 顶部加 `causedByInterrupt(e)` cause 链识别（与 classify 同风格自引用/深度守卫），命中则走 `finishWithNote(STOPPED_NOTE, "stopped")` 而非错误帧；⑤后端两处 catch 分支收尾前用 `Thread.interrupted()` **清除**中断标志（取代反模式的 `Thread.currentThread().interrupt()` 恢复标志：收尾帧发送就跑在本线程，标志残留让第一帧即失败；DB 落库必成、帧发送尽力而为），前端 `WorkspaceView.stopAgentTurn` 改为**本地闭环**：发帧后立即清生成态 + 写停止注记行，不等后端收尾帧（丢帧不可接受，双份注记可接受；后端若送达对已复位状态幂等）。回归：`AiWebSocketHandlerTest` 4 用例（手写 JSON 字符串验契约线上键名）+ `AiAgentServiceTest.interruptWrappedInRuntimeExceptionFinishesWithStopNoteNotError` / `stopCleanupRunsOnInterruptFreeThread`（后者首版把断言写在 finally 后自己把泄漏证据擦掉——假绿，修正为 try 内捕获 `leaked` 后再断言）+ 前端 WorkspaceView 本地闭环用例；需求回写 ai-agent spec「受控停止任务」Ctrl+C Scenario（本地闭环语义）+ tasks 17.10。
+**预防措施**: ①写完服务能力（stop/cancel/清理事务）必须同步接上至少一个真实触发入口，否则它就是死代码——用“入口存在性检查”收口：契约有下行能力就得有对应上行触发帧；②“中断/取消”类命令应设计为幂等通知：未命中目标时静默成功而非报错，避免竞态窗口（恰在收尾时按 Ctrl+C）把错误噪声抛给用户；③“状态复位由单一真相源（后端帧）驱动”的设计必须前提性回答“真相源帧是否保证送达”——当取消手段（interrupt/关连接）本身可能破坏发送通道时，发起方必须有本地闭环兜底，并对可能的双份送达做幂等兼容；④凡按异常类型分支的取消/中断语义，必须同时识别**被框架包装的** InterruptedException（cause 链遍历），因为阻塞式流读（langchain4j/reactor）从不裸抛；日志里“命中在飞回合=true”但用户看到报错帧，就是这种“入口接了、异常分支没接”的典型指纹；⑤线程中断标志是“远处副作用”：捕获包装异常的线程仍带标志继续执行收尾代码，后续任何阻塞 IO（WS blocking send、JDBC、写文件）可能立即失败——catch 中断类异常后跑阻塞收尾前，必须显式决策 `Thread.interrupted()` 清标志还是 `Thread.currentThread().interrupt()` 恢复标志，并把决策理由写进注释。
+
+---
+
+**最后更新**: 2026-09-23
 **维护者**: AI Agent + 开发团队

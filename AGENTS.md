@@ -6,13 +6,20 @@
 
 **AnanoesisShell** 是一个 AI 驱动的远程终端（AI-powered remote terminal）：用户无需记忆命令，由 AI 自动完成 Linux 运维操作。
 
-本仓库当前处于**基础结构初始化阶段**，采用 **Spec-Driven Development (SDD)** 方法论，融合三大 AI 编码工程理念：
+本仓库当前已实现**本地 Web SSH + AI 核心流程**，采用 **Spec-Driven Development (SDD)** 方法论，融合三大 AI 编码工程理念：
 
 1. **Harness 工程** — 通过 Guides（前馈控制）和 Sensors（反馈控制）约束 AI 代理行为
 2. **OpenSpec** — 规格驱动开发，specs 作为真相源，changes 管理变更
 3. **Superpowers** — 可组合技能（vendored 到 `.qoder/skills/`）增强 AI 代理纪律性
 
-> ⚠️ **技术栈尚未锁定**：前端 / 后端的语言与框架将在后续通过 OpenSpec 变更（`/opsx:propose`）决定并固化。在此之前，任何代理**不得**擅自引入具体业务框架或依赖。
+> 技术栈已由 `add-ssh-ai-agent-mvp` 变更及现有实现确立，见下方「技术栈选型约束」。桌面运行时与安装器尚未选定；不得擅自引入新业务框架或宣称 Windows 兼容已通过。
+
+## 技术栈选型约束
+- 前端：Vue3 + TypeScript + Vite + Pinia + Vue Router + xterm.js，原生 CSS 深色终端工作区。
+- 后端：Java 17 编译基线 + Spring Boot 3.5 + Spring AI 1.1 + sshj；数据使用 MyBatis-Plus + SQLite(WAL) + Flyway，凭据使用 java-keyring + AES-GCM。具体版本以清单/锁文件为准。
+- 契约：`contract/openapi.yaml` 生成 REST 接口/客户端；`contract/asyncapi.yaml` 约束手写 WS 类型与对齐测试。
+- 远端仅支持 Linux 服务器；最终客户端只面向 Windows 7/10/11。当前仍是 Web MVP，安装包与各系统兼容性未完成验证，尤其 Win7 需要独立可行性评估。
+- 公共、前端、后端、数据库与平台规范统一见 `.qoder/rules/`；规则是后续开发约束，不等于存量缺口已修复。
 
 ## 仓库架构（AI Workspace）
 
@@ -21,8 +28,8 @@
 | 仓库 | 角色 | 远程地址 |
 |------|------|---------|
 | 主控仓库（本仓库） | SDD 方法论、规格、约束门禁、多代理编排、文档 | https://github.com/13198582183/AnanoesisShell.git |
-| `frontend/` 子仓库 | 前端代码（技术栈待定） | https://github.com/13198582183/AnanoesisShell-frontend.git |
-| `backend/` 子仓库 | 后端代码（技术栈待定） | https://github.com/13198582183/AnanoesisShell-backend.git |
+| `frontend/` 子仓库 | 前端代码（Vue3 + TypeScript） | https://github.com/13198582183/AnanoesisShell-frontend.git |
+| `backend/` 子仓库 | 后端代码（Spring Boot） | https://github.com/13198582183/AnanoesisShell-backend.git |
 
 ### 子仓库操作指南
 
@@ -67,8 +74,8 @@ AnanoesisShell/
 ├── openspec/              # 规格驱动开发
 │   ├── specs/             # 规格文件（真相源）
 │   └── changes/           # 变更提案（含 archive/）
-├── frontend/              # [子仓库] 前端（技术栈待定）
-├── backend/               # [子仓库] 后端（技术栈待定）
+├── frontend/              # [子仓库] 前端（Vue3 + TypeScript）
+├── backend/               # [子仓库] 后端（Spring Boot）
 ├── scripts/               # 初始化 / 结构校验脚本（PowerShell）
 ├── docs/                  # 设计文档与实施计划
 ├── AGENTS.md              # 本文件
@@ -99,8 +106,8 @@ AnanoesisShell/
    - **解决问题后**：将新发现的问题补充进 `known-issues.md`（症状 / 原因 / 解决方案 / 预防措施）
 
 5. **技术栈约束**
-   - 当前阶段**技术栈未锁定**，禁止擅自引入具体业务框架 / 依赖
-   - 技术栈选型必须通过 OpenSpec 变更流程决定，并回写本文件新增的「技术栈选型约束」章节
+   - 遵守上方已落地的技术栈基线，禁止擅自替换框架或引入未经评估的依赖
+   - 后续技术栈/桌面运行时选型必须通过 OpenSpec 决定，并同步「技术栈选型约束」与 `.qoder/rules/`
 
 ### 质量门禁（来自 `.harness/sensors/`）
 

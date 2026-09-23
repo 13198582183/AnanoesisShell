@@ -1,0 +1,1533 @@
+openapi: 3.0.3
+
+# =============================================================================
+# AnanoesisShell REST 接口契约（契约优先 / Single Source of Truth）
+# 变更：add-multi-session-agent-terminal —— V2 契约升级
+# 依据：openspec/changes/add-multi-session-agent-terminal/specs/*（8 个 spec）+ design.md D2/D9/D10
+# =============================================================================
+
+info:
+  title: AnanoesisShell REST API
+  version: 0.2.0-draft
+  description: >
+    AI 驱动的远程终端后端 REST 契约。V2 在 V1 基础上新增连接实例控制面、SFTP 文件浏览与传输、
+    对话游标分页与删除、模型预算扩展字段。
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: 阶段 1 本地/内网单机 Web（design.md D1）
+
+tags:
+  - name: hosts
+    description: 服务器连接配置管理
+  - name: sessions
+    description: 连接会话生命周期查询
+  - name: sessions-control
+    description: 连接实例控制面（design D2）
+  - name: model-configs
+    description: 模型配置管理与当前生效切换
+  - name: settings
+    description: 全局设置
+  - name: approvals
+    description: 审批审计日志查询
+  - name: conversations
+    description: AI 会话与消息历史
+  - name: files
+    description: SFTP 目录浏览
+  - name: transfers
+    description: 文件传输管理
+  - name: TransferContent
+    description: 二进制上传/下载（从代码生成排除；design D10）
+    x-skip-codegen: true
+
+paths:
+
+  /api/hosts:
+    get:
+      tags: [hosts]
+      operationId: listHosts
+      summary: 服务器配置列表
+      responses:
+        '200':
+          description: 配置列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Host'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [hosts]
+      operationId: createHost
+      summary: 新增服务器配置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Host'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/CredentialUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/hosts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/HostId'
+    get:
+      tags: [hosts]
+      operationId: getHost
+      summary: 查看单个服务器配置
+      responses:
+        '200':
+          description: 配置详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [hosts]
+      operationId: updateHost
+      summary: 编辑既有服务器配置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Host'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/CredentialUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [hosts]
+      operationId: deleteHost
+      summary: 删除服务器配置
+      responses:
+        '204':
+          description: 已删除
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/sessions:
+    get:
+      tags: [sessions]
+      operationId: listSessions
+      summary: 连接会话列表
+      parameters:
+        - name: host_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SessionStatus'
+      responses:
+        '200':
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [sessions-control]
+      operationId: createSession
+      summary: 创建连接实例（返回一次性 control_token；design D2）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: 已创建（control_token 仅此次响应展示）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/sessions/{id}/close:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/SessionControlHeader'
+    post:
+      tags: [sessions-control]
+      operationId: closeSession
+      summary: 关闭连接实例
+      responses:
+        '204':
+          description: 已关闭
+        '403':
+          description: 控制凭证错误（code=session_control_invalid）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/sessions/{id}/conversations:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [sessions-control]
+      operationId: listSessionConversations
+      summary: 列出连接内对话（keyset 分页）
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 30
+      responses:
+        '200':
+          description: 对话分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [sessions-control]
+      operationId: createSessionConversation
+      summary: 在连接内创建对话
+      parameters:
+        - $ref: '#/components/parameters/SessionControlHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionConversationCreate'
+      responses:
+        '201':
+          description: 已创建（含 session_id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/sessions/{id}/active-conversation:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/SessionControlHeader'
+    put:
+      tags: [sessions-control]
+      operationId: setActiveConversation
+      summary: 选择连接内活动对话
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActiveConversationRequest'
+      responses:
+        '200':
+          description: 已切换
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/conversations/{id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ConversationId'
+    get:
+      tags: [conversations]
+      operationId: listConversationMessages
+      summary: 查询会话消息历史（keyset 分页）
+      description: >
+        V2 改为 (seq,id) keyset 分页，默认 50、最大 200。
+        消息增加 source/command_id/run_id 字段（design D6）。
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: 消息分页列表（按时间升序）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/conversations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ConversationId'
+    delete:
+      tags: [conversations]
+      operationId: deleteConversation
+      summary: 删除单个对话
+      responses:
+        '204':
+          description: 已删除
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 对话正在执行中（code=conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/conversations/batch-delete:
+    post:
+      tags: [conversations]
+      operationId: batchDeleteConversations
+      summary: 批量删除对话（最多 100 个）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchDeleteRequest'
+      responses:
+        '200':
+          description: 批量删除成功
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: 集合中存在活动对话（code=conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/sessions/{id}/files:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/SessionControlHeader'
+    get:
+      tags: [files]
+      operationId: listSessionFiles
+      summary: 远端目录浏览（有界 READDIR）
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: 目录条目分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DirectoryListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/sessions/{id}/transfers:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/SessionControlHeader'
+    post:
+      tags: [transfers]
+      operationId: createTransfer
+      summary: 创建文件传输任务（design D9）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransferRequest'
+      responses:
+        '201':
+          description: 已创建传输任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: 目标文件已存在（code=transfer_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: 传输队列已满（code=transfer_quota_exceeded）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/transfers/{id}/content:
+    parameters:
+      - $ref: '#/components/parameters/TransferId'
+    put:
+      tags: [TransferContent]
+      operationId: uploadTransferContent
+      summary: 上传二进制内容（从代码生成排除）
+      x-skip-codegen: true
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: 上传成功
+        '409':
+          description: 传输状态冲突
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: 文件大小超出限制
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      tags: [TransferContent]
+      operationId: downloadTransferContent
+      summary: 下载二进制内容（从代码生成排除）
+      x-skip-codegen: true
+      parameters:
+        - name: ticket
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 下载内容
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+            Referrer-Policy:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 票据无效或已过期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/transfers/{id}/download-ticket:
+    parameters:
+      - $ref: '#/components/parameters/TransferId'
+      - $ref: '#/components/parameters/SessionControlHeader'
+    post:
+      tags: [transfers]
+      operationId: claimDownloadTicket
+      summary: 领取下载票据
+      responses:
+        '201':
+          description: 票据已领
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadTicket'
+        '409':
+          description: 传输状态不允许领票
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/transfers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TransferId'
+    get:
+      tags: [transfers]
+      operationId: getTransfer
+      summary: 查询传输任务状态
+      responses:
+        '200':
+          description: 传输任务详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/transfers/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TransferId'
+    post:
+      tags: [transfers]
+      operationId: cancelTransfer
+      summary: 取消传输任务（幂等）
+      responses:
+        '200':
+          description: 取消结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/model-configs:
+    get:
+      tags: [model-configs]
+      operationId: listModelConfigs
+      summary: 模型配置列表
+      responses:
+        '200':
+          description: 模型配置列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelConfig'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [model-configs]
+      operationId: createModelConfig
+      summary: 新增模型配置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelConfig'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/CredentialUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/model-configs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ModelConfigId'
+    get:
+      tags: [model-configs]
+      operationId: getModelConfig
+      summary: 查看单个模型配置
+      responses:
+        '200':
+          description: 配置详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfig'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [model-configs]
+      operationId: updateModelConfig
+      summary: 编辑模型配置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelConfig'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/CredentialUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [model-configs]
+      operationId: deleteModelConfig
+      summary: 删除模型配置
+      responses:
+        '204':
+          description: 已删除
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/model-configs/active:
+    put:
+      tags: [model-configs]
+      operationId: setActiveModelConfig
+      summary: 切换当前生效的模型配置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActiveModelConfigRequest'
+      responses:
+        '200':
+          description: 已切换
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/settings:
+    get:
+      tags: [settings]
+      operationId: getSettings
+      summary: 读取全局设置
+      responses:
+        '200':
+          description: 设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [settings]
+      operationId: updateSettings
+      summary: 更新全局设置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Settings'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/approvals:
+    get:
+      tags: [approvals]
+      operationId: listApprovals
+      summary: 审批审计日志查询（分页）
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+            default: 20
+        - name: host_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: decision
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ApprovalDecision'
+      responses:
+        '200':
+          description: 审计记录分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalsPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/conversations:
+    get:
+      tags: [conversations]
+      operationId: listConversations
+      summary: AI 会话列表（应用级管理接口）
+      responses:
+        '200':
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Conversation'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [conversations]
+      operationId: createConversation
+      summary: 创建 AI 会话（应用级管理接口）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationCreate'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+# =============================================================================
+components:
+
+  parameters:
+    HostId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ModelConfigId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: 连接实例 ID（V2）
+      schema:
+        type: string
+        format: uuid
+    TransferId:
+      name: id
+      in: path
+      required: true
+      description: 传输任务 ID（V2）
+      schema:
+        type: string
+        format: uuid
+    SessionControlHeader:
+      name: X-Session-Control
+      in: header
+      required: true
+      description: 连接控制令牌（design D2）
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: 请求校验失败（code=validation_error）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 资源不存在（code=not_found）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: 资源状态冲突（code=conflict）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    CredentialUnavailable:
+      description: 凭据保护不可用（code=credential_protection_unavailable）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: 服务器内部错误（code=internal_error）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    AuthType:
+      type: string
+      enum: [password, private_key]
+    ThinkingMode:
+      type: string
+      enum: [thinking, non_thinking]
+    SessionStatus:
+      type: string
+      enum: [open, ended]
+    EndReason:
+      type: string
+      enum: [user_disconnect, timeout, remote_close]
+    ApprovalDecision:
+      type: string
+      enum: [approved, cancelled, timed_out]
+    ExecutionStatus:
+      type: string
+      enum: [executed, rejected, execution_timeout, output_truncated]
+    ToolResultStatus:
+      type: string
+      enum: [success, rejected, execution_timeout, output_truncated, error]
+    MessageRole:
+      type: string
+      enum: [user, assistant, tool, system]
+    TransferStatus:
+      type: string
+      description: 传输任务状态（sftp-transfer）
+      enum: [queued, ready, transferring, publishing, published, delivered, failed, cancelled, expired, unknown]
+    TransferDirection:
+      type: string
+      enum: [upload, download]
+    MessageSource:
+      type: string
+      description: 消息来源（design D6）
+      enum: [agent, shell_event]
+    OutputLimitField:
+      type: string
+      description: Chat Completions 输出上限字段名（design D7）
+      enum: [max_tokens, max_completion_tokens]
+      default: max_tokens
+    ThinkingRequestFormat:
+      type: string
+      description: 思考模式请求扩展格式（design D8）
+      enum: [none, qwen_compatible]
+      default: none
+    ErrorCode:
+      type: string
+      description: >
+        统一错误码注册表。V2 新增 session_control_required/session_control_invalid/
+        transfer_quota_exceeded/transfer_conflict/transfer_target_changed/context_budget_exceeded。
+      enum:
+        - validation_error
+        - not_found
+        - conflict
+        - host_unreachable
+        - auth_failed
+        - credential_protection_unavailable
+        - model_endpoint_unreachable
+        - model_endpoint_error
+        - api_key_missing
+        - internal_error
+        - session_control_required
+        - session_control_invalid
+        - transfer_quota_exceeded
+        - transfer_conflict
+        - transfer_target_changed
+        - context_budget_exceeded
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              reason:
+                type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    Host:
+      type: object
+      required: [host, port, username, auth_type]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        host:
+          type: string
+          example: 10.0.0.12
+        port:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65535
+          default: 22
+        username:
+          type: string
+        auth_type:
+          $ref: '#/components/schemas/AuthType'
+        group_name:
+          type: string
+          nullable: true
+        note:
+          type: string
+          nullable: true
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          nullable: true
+        private_key:
+          type: string
+          writeOnly: true
+          nullable: true
+        passphrase:
+          type: string
+          format: password
+          writeOnly: true
+          nullable: true
+        credential_set:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    Session:
+      type: object
+      required: [id, host_id, status, started_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        host_label:
+          type: string
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_reason:
+          allOf:
+            - $ref: '#/components/schemas/EndReason'
+          nullable: true
+
+    CreateSessionRequest:
+      type: object
+      required: [host_id]
+      properties:
+        host_id:
+          type: string
+          format: uuid
+
+    SessionCreated:
+      type: object
+      description: 创建连接响应（control_token 仅此次展示；design D2）
+      required: [id, host_id, status, control_token]
+      properties:
+        id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [open]
+        control_token:
+          type: string
+
+    ModelConfig:
+      type: object
+      description: >
+        模型配置。V2 新增 context_window_tokens/max_output_tokens/
+        output_limit_field/thinking_request_format（design D7/D8）。
+      required: [provider, base_url, model]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        provider:
+          type: string
+          example: mindie
+        base_url:
+          type: string
+          format: uri
+        model:
+          type: string
+        api_key:
+          type: string
+          writeOnly: true
+          nullable: true
+        api_key_set:
+          type: boolean
+          readOnly: true
+        default_thinking_mode:
+          allOf:
+            - $ref: '#/components/schemas/ThinkingMode'
+        is_active:
+          type: boolean
+          readOnly: true
+        context_window_tokens:
+          type: integer
+          format: int32
+          description: 上下文窗口 token 容量（design D7）
+          default: 8192
+          minimum: 1024
+          maximum: 2097152
+        max_output_tokens:
+          type: integer
+          format: int32
+          description: 最大输出预留 token
+          default: 1024
+          minimum: 1
+        output_limit_field:
+          allOf:
+            - $ref: '#/components/schemas/OutputLimitField'
+          default: max_tokens
+        thinking_request_format:
+          allOf:
+            - $ref: '#/components/schemas/ThinkingRequestFormat'
+          default: none
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    ActiveModelConfigRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+
+    Settings:
+      type: object
+      required: [default_thinking_mode]
+      properties:
+        default_thinking_mode:
+          $ref: '#/components/schemas/ThinkingMode'
+
+    Approval:
+      type: object
+      required: [id, created_at, host_id, tool_name, tool_params, ai_analysis, decision]
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        host_id:
+          type: string
+          format: uuid
+        host_label:
+          type: string
+        tool_name:
+          type: string
+        tool_params:
+          type: object
+          additionalProperties: true
+        ai_analysis:
+          type: string
+        decision:
+          $ref: '#/components/schemas/ApprovalDecision'
+        decided_at:
+          type: string
+          format: date-time
+          nullable: true
+        execution:
+          allOf:
+            - $ref: '#/components/schemas/ExecutionResult'
+          nullable: true
+
+    ExecutionResult:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/ExecutionStatus'
+        exit_code:
+          type: integer
+          format: int32
+          nullable: true
+        stdout:
+          type: string
+          nullable: true
+        stderr:
+          type: string
+          nullable: true
+        truncated:
+          type: boolean
+        note:
+          type: string
+          nullable: true
+
+    ApprovalsPage:
+      type: object
+      required: [items, total, page, size]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Approval'
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+          format: int32
+        size:
+          type: integer
+          format: int32
+
+    Conversation:
+      type: object
+      description: AI 会话。V2 新增 session_id
+      required: [id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+          nullable: true
+        session_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 绑定的连接实例 ID（V2）
+        title:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ConversationCreate:
+      type: object
+      properties:
+        host_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+          nullable: true
+
+    SessionConversationCreate:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+
+    ActiveConversationRequest:
+      type: object
+      required: [conversation_id]
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+
+    Message:
+      type: object
+      description: 会话消息。V2 新增 seq/source/command_id/run_id
+      required: [id, conversation_id, role, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        seq:
+          type: integer
+          format: int64
+          readOnly: true
+          description: 消息序号（V2；keyset 分页用）
+        role:
+          $ref: '#/components/schemas/MessageRole'
+        content:
+          type: string
+          nullable: true
+        thinking_content:
+          type: string
+          nullable: true
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCallRecord'
+        source:
+          allOf:
+            - $ref: '#/components/schemas/MessageSource'
+          nullable: true
+          description: 消息来源（V2）
+        command_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 关联命令执行 ID（V2）
+        run_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 关联 Agent 运行 ID（V2）
+        created_at:
+          type: string
+          format: date-time
+
+    ToolCallRecord:
+      type: object
+      required: [tool_name, tool_params, result_status]
+      properties:
+        tool_name:
+          type: string
+        tool_params:
+          type: object
+          additionalProperties: true
+        result_status:
+          $ref: '#/components/schemas/ToolResultStatus'
+        result:
+          type: string
+          nullable: true
+        approval_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    ConversationListResponse:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conversation'
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+
+    MessageListResponse:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+
+    BatchDeleteRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+          maxItems: 100
+
+    FileEntry:
+      type: object
+      description: 远端目录条目
+      required: [name, path, is_dir, is_link, is_regular]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        size:
+          type: integer
+          format: int64
+          nullable: true
+        mode:
+          type: string
+          nullable: true
+        mtime:
+          type: string
+          format: date-time
+          nullable: true
+        is_dir:
+          type: boolean
+        is_link:
+          type: boolean
+        is_regular:
+          type: boolean
+
+    DirectoryListResponse:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileEntry'
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+
+    ExpectedTarget:
+      type: object
+      description: 覆盖确认时的目标快照
+      required: [size, mtime, mode]
+      properties:
+        size:
+          type: integer
+          format: int64
+        mtime:
+          type: string
+          format: date-time
+        mode:
+          type: string
+
+    CreateTransferRequest:
+      type: object
+      required: [direction, remote_path, file_name, size]
+      properties:
+        direction:
+          $ref: '#/components/schemas/TransferDirection'
+        remote_path:
+          type: string
+        file_name:
+          type: string
+        size:
+          type: integer
+          format: int64
+        overwrite:
+          type: boolean
+          default: false
+        expected_target:
+          allOf:
+            - $ref: '#/components/schemas/ExpectedTarget'
+          nullable: true
+
+    Transfer:
+      type: object
+      required: [id, direction, file_name, remote_path, status, bytes_transferred, total_bytes]
+      properties:
+        id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        direction:
+          $ref: '#/components/schemas/TransferDirection'
+        file_name:
+          type: string
+        remote_path:
+          type: string
+        status:
+          $ref: '#/components/schemas/TransferStatus'
+        bytes_transferred:
+          type: integer
+          format: int64
+        total_bytes:
+          type: integer
+          format: int64
+        ready_deadline:
+          type: string
+          format: date-time
+          nullable: true
+        failure_code:
+          type: string
+          nullable: true
+        failure_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    DownloadTicket:
+      type: object
+      required: [ticket]
+      properties:
+        ticket:
+          type: string

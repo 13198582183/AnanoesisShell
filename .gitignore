@@ -6,6 +6,7 @@ desktop.ini
 # ---- IDE / Editor ----
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
 *~
@@ -45,6 +46,8 @@ coverage/
 *.tmp
 *.bak
 .cache/
+.tmp-probe/
+.tmp-*
 
 # ---- 敏感运维文件（含凭据，绝不入库）----
 deploy/.env.production

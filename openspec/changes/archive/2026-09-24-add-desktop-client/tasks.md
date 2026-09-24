@@ -40,7 +40,7 @@
 
 ## 7. 发布与口径回写
 
-- [ ] 7.1 主仓库 `gh release create v0.1.0`：挂载 Setup.exe，Release 说明中文载明安装要求、发行者署名 liziwen（李仔文）、未经 Authenticode 签名的如实声明与 SmartScreen 处理指引、自动更新未实现、实际已验证的系统范围；网页端确认可下载
+- [x] 7.1 主仓库 `gh release create v0.1.0`：挂载 Setup.exe，Release 说明中文载明安装要求、发行者署名 liziwen（李仔文）、未经 Authenticode 签名的如实声明与 SmartScreen 处理指引、自动更新未实现、实际已验证的系统范围；网页端确认可下载。【2026-09-24 实证：本机无 gh CLI，改经 GitHub REST API 创建 release id=395288181（tag v0.1.0 → main）；资产 AnanoesisShell-Setup-0.1.0.exe 上传 201、字节数 202377850 与本地一致；公开 URL Range 探测 206 可下载；说明页含全部 Required 条目】
 - [x] 7.2 修订兼容口径：`AGENTS.md` 技术栈行（+Electron 壳与捆绑 JRE 17、兼容目标 Win10/11）、`.qoder/rules/platform-compatibility.md` 移除 Win7 承诺并保留"实机验证才可以说通过"条款；文档描述与 Release 页一致。【2026-09-24 完成：两文件均已修订，Electron 版本线按实际 pin 44.4.5 记载】
 - [x] 7.3 `.qoder/known-issues.md` 回写本变更实证发现的坑（含 Windows destroy 不触发 shutdown hook、health show-details 泄露面等，四要素齐全）。【实施期间持续回写：#27 安装器占用 EPERM、#28 CSP 剥 xterm 动态样式致配色丢失、#29 内网模型 think 开闭标签内联 content 双载体、#30 keepShortcuts+图标缓存致桌面快捷方式不更新】
-- [ ] 7.4 三仓提交推送闭环：backend → frontend → 主仓库（指针+工件），记录 commit hash；随后 /opsx:archive 同步 `desktop-client` 主 spec
+- [x] 7.4 三仓提交推送闭环：backend → frontend → 主仓库（指针+工件），记录 commit hash；随后 /opsx:archive 同步 `desktop-client` 主 spec。【2026-09-24 实证：经系统代理 127.0.0.1:22570 命令级覆盖推送（直连遭连接重置）；backend f9e56ec / frontend 051fbe9 / 主仓 c45baec；三仓均 ff 合入 main 已推，feature/add-desktop-client 本地+远端已删；archive 目录随主仓提交入库】

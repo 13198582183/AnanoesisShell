@@ -665,14 +665,12 @@ paths:
     delete:
       tags: [model-configs]
       operationId: deleteModelConfig
-      summary: 删除模型配置
+      summary: 删除模型配置（目标是生效配置时，生效指针一并清除，系统回到零配置初始态）
       responses:
         '204':
           description: 已删除
         '404':
           $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
 

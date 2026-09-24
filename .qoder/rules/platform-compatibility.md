@@ -7,17 +7,17 @@ alwaysApply: true
 
 ## 1. 产品范围（用户明确要求）
 - 远端连接与运维只做 Linux 服务器；不开发 Windows Server、macOS 等其他远端系统能力，不增加 RDP 等非 Linux SSH 产品范围。
-- 最终客户端仅安装在 Windows，兼容目标为 Windows 7、Windows 10、Windows 11；不开发 Linux/macOS 客户端安装包。
-- 当前交付形态仍是本地 Web MVP（Vue3 前端 + Spring Boot 后端），桌面壳、安装器、运行时捆绑与升级尚未实现。
-- “目标支持”“厂商支持”“实机验证通过”必须分别记录；当前开发机运行正常不能证明三种 Windows 均兼容。
-- Windows 版本/补丁下限、x86/x64/ARM64 架构范围尚未裁定，不能擅自把需求缩小成仅 Win10/11 或仅 x64；在桌面兼容性变更中确认矩阵。
+- 最终客户端仅安装在 Windows，兼容目标为 Windows 10、Windows 11（x64）；Win7/8.1 兼容承诺已由 `add-desktop-client` 变更移除；不开发 Linux/macOS 客户端安装包。
+- 当前交付形态含桌面客户端（Electron 壳 + 捆绑 Temurin JRE 17 + NSIS 安装包，见 `add-desktop-client`）与开发用 Web 形态（Vite + Spring Boot）；自动更新未实现，升级需重新安装。
+- “目标支持”“厂商支持”“实机验证通过”必须分别记录；本机运行正常不能证明 Win10/11 各版本均兼容，未验证项在 Release 页明确标注。
+- 架构范围已由 `add-desktop-client` 裁定为 x64；如需扩展 ARM64 另开变更并重新验证。
 
 ## 2. 已核实的选型约束
-- 当前后端编译基线为 Java 17，本机 JDK 21 编译不能推导目标系统可运行；必须核实选定 JRE 发行版、具体版本、许可及原生依赖的操作系统支持。
-- Electron 22 是最后支持 Windows 7 的大版本；Electron 23 及以后不支持 Windows 7。旧内核停止维护，不能为兼容而无说明地固定旧版，不能宣称安全更新仍受保障。
-- Windows 7 的 Edge/WebView2 兼容线止于 109；采用 WebView2 的壳也必须验证 SDK、Rust/工具链及安装器，不能仅凭旧 Runtime 能启动就认定兼容完成。
-- Oracle JDK 17 当前认证列表没有 Windows 7；这不是“所有 Java 17 发行版都绝对无法运行”的证明。不得擅自降到 Java 8/11 绕过问题（会改变 Spring Boot 3 的运行基线）。
-- 可评估现代 Windows 主线与 Win7 兼容线分离，但仅是候选方向；未通过 OpenSpec 可行性验证与风险确认前，不锁定 Electron/Tauri/JRE 发行版。
+- 后端编译基线 Java 17，客户机运行时分发为捆绑的 Temurin JRE 17 win32-x64（GPLv2+CE 再分发合规已在 spike-notes 核实）；不要求目标机安装 Java。
+- Electron 22 是最后支持 Windows 7 的大版本；选定版本线（Electron 44）不支持 Win7/8.1，此为移除 Win7 承诺的直接依据。旧内核停止维护，不能为兼容而无说明地固定旧版。
+- Win7 的 Edge/WebView2 兼容线止于 109；本项目未采用 WebView2 壳（D1 已否决），此条仅作历史背景保留。
+- 不得擅自降到 Java 8/11 绕过问题（会改变 Spring Boot 3 的运行基线）。
+- 桌面运行时选型已经由 `add-desktop-client` 经 OpenSpec 完成（Electron + electron-builder NSIS + Temurin JRE 17）；后续更换须另开变更。
 
 ## 3. 开发与打包约束
 - 远端命令使用 Linux 路径与 Linux shell 语义，本地文件使用 Windows 路径 API；不得用本地路径分隔符处理远端路径。

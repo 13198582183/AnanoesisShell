@@ -25,7 +25,7 @@
 | R8 | `POST /api/model-configs` · createModelConfig | model-provider | 模型配置管理 | 新增并切换 | 密文存储；503 |
 | R9 | `GET /api/model-configs/{id}` · getModelConfig | model-provider | 模型配置管理 | —（查看） | `api_key` 不回显 |
 | R10 | `PUT /api/model-configs/{id}` · updateModelConfig | model-provider | 模型配置管理 | 编辑 | `api_key` 可选；503 |
-| R11 | `DELETE /api/model-configs/{id}` · deleteModelConfig | model-provider | 模型配置管理 | —（删除） | 204；删除生效配置→409 |
+| R11 | `DELETE /api/model-configs/{id}` · deleteModelConfig | model-provider | 模型配置管理 | —（删除） | 204；删除生效配置一并清除生效指针（零配置是合法初始态；历史 409 已废除——首条自动生效导致最后一条永远删不掉） |
 | R12 | `PUT /api/model-configs/active` · setActiveModelConfig | model-provider | 模型配置管理 | 新增并切换（设为生效） | `ActiveModelConfigRequest{id}` |
 | R13 | `GET /api/settings` · getSettings | model-provider | 思考与非思考双模式 | — | `Settings.default_thinking_mode` |
 | R14 | `PUT /api/settings` · updateSettings | model-provider | 思考与非思考双模式 | 选择默认模式 | 更新默认模式 |
@@ -68,7 +68,7 @@
 |---|---|---|---|---|
 | `validation_error` | 400 | 通用 | 请求校验 | REST |
 | `not_found` | 404 | 通用 | 资源不存在 | REST |
-| `conflict` | 409 | model-provider / conversation-management | 删除生效配置冲突 / 删除活动对话 | REST |
+| `conflict` | 409 | conversation-management | 删除活动对话 | REST |
 | `credential_protection_unavailable` | 503 | credential-store | 密钥库不可用 | REST |
 | `host_unreachable` | —（WS） | ssh-connection | 建立 SSH 连接 / 主机不可达 | WS `terminal_output`(type=error) |
 | `auth_failed` | —（WS） | ssh-connection | 建立 SSH 连接 / 认证失败 | WS `terminal_output`(type=error) |

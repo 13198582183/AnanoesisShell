@@ -272,7 +272,43 @@
 **解决方案**: BUG-G：`ToolOutcome` 第 5 参重定义为 `userRejected`（零消费方直接重命名），`runGated` 仅 `ApprovalOutcome.CANCELLED` 置真（超时/中断保持 false 维持回喂现状）；`loopRounds` 执行循环遇取消 break（不再执行后续工具），proposals/tool 消息落库循环改按 outcomes 实际长度截断配对（原 `outcomes.get(index++)` 遍历全部 calls 会越界），落完后 `finishWithNote(CANCEL_END_NOTE, "approval_cancelled")` 终结不回喂。BUG-H：`TerminalTimeline` 新增 expose `openAgentPrompt()`（复用 ensureAgentPromptLine 幂等），`WorkspaceView` 四类触点（Final/Error 帧、stopAgentTurn 本地闭环、重连重置注记）在 Agent 模式调用；`writeToTerminal` 在提示行已打开且无草稿时先 `\r\x1b[K` 清行再写输出（防异步输出拼在 ❯ 后）；`ensureAgentPromptLine` 换行后消费 `initialPromptWritten` 标志（否则首次写入双清行把刚落的 ❯ 也抹掉——实现 GREEN 时由测试抓出）。回归：后端 `AiAgentServiceTest#userCancellationEndsTurnWithoutAnotherModelCall`（streamCallCount==1 + finishReason=approval_cancelled + 注记落库）+ 前端 TerminalTimeline 4 用例/WorkspaceView 5 用例；浏览器终验：touch 审批点取消→留痕“→ 已拒绝”+终结注记+持续观察无新回合+❯ 自动落位，落位行直接键入新问题畅通，回答完成后 ❯ 再次落位。
 **预防措施**: ①“拒绝/取消”类回喂先问该不该喂：确定性终结信号（用户主动取消）由编排层直接终结，只有需要模型改道的信息（超时/参数错）才回喂；②循环可提前 break 时，所有按下标配对遍历（`outcomes.get(index++)`）都须改为按短集合实际长度截断，否则越界或错配；③凡把 UI 元素（提示符/光标位）的呈现挂在按键事件上的实现，必须在每个“输出结束→等待输入”收尾点主动渲染，验收时不能只测按键后是否正确，还要测输出刚结束、无任何按键时的静态画面；④同一写入入口叠加多个“清占位行”标志时必须互相消费（换行离开占位行即视为已清除），双清会把刚写入的内容一并抹掉；⑤验证终端交互类改动的浏览器终验，取证前整页强刷排除 HMR 混合态。
 
+## 27. 删除最后一条模型配置报 409：生效配置拒删设计与自动生效规则互锁，用户永远删不掉最后一条
+
+**发现时间**: 2026-09-24（用户附截图反馈：删到只剩最后一条再删报「模型配置加载失败：Response returned an error code」）
+**影响范围**: 设置页模型配置删除链路；与桌面壳空库首启诉求同源（零配置必须是合法态）
+**症状**: 删除当前生效配置返回 409；且前端 banner 把删除失败渲染成「模型配置加载失败」，错误原因被生成客户端吞成技术黑话
+**根本原因**: 三层叠加——①`ModelConfigService.delete()` 对生效配置抛 ConflictException（历史契约 TRACEABILITY Q4/R11 承诺「删除生效→409」，防 AI 能力静默失效）；但 create 时首条自动生效（`autoActivated = activeConfigId().isEmpty()`），“只剩一条”必然“它就是生效项”，两规则互锁使最后一条永远删不掉——而 requireActive 零配置时本就报可读引导「尚无生效的模型配置」、界面也有缺配置提示，防御的前提（静默失效）不成立；②前端 SettingsView 把加载/变更共用的 error 写死「加载失败」文案；③openapi 生成客户端 ResponseError 把后端 Error JSON 的 message 吞成固定串 "Response returned an error code"。
+**解决方案**: 契约级行为变更（用户裁定）：`delete()` 移除 409 分支，删生效配置时同步 `settingsService.deleteKey(ACTIVE_CONFIG_KEY)` 不留悬空指针；同步修订 contract/openapi.yaml（删 409 响应）、TRACEABILITY R11 与错误码表、主 spec model-provider 新增「删除生效中的模型配置」场景；前端新增 `describeApiError`（解 ResponseError body 透出后端 message）+ banner 改「操作失败」。TDD：先改集成测试断言 204+指针清空（RED 精确 2 失败），GREEN 后全量回归 BE/FE 双 0。
+**预防措施**: ①“拒绝操作保护用户”的设计必须检查与其它不变量（如首条自动生效）是否互锁成死态：任何“用户永远无法达成 X”的状态设计都是错的，除非 X 本身非法；②零配置/空库这类初始合法态的处置路径（requireActive 报错文案、UI 缺配置提示）必须在设计时同步验证，而不是用拒绝操作回避空态；③行为变更触及 contract/ 承诺时，契约行、错误码表、openapi、主 spec 四处必须同批修订。
+
+## 28. 桌面壳 CSP `style-src 'self'` 拦截 xterm DOM 渲染器动态样式表：打包后 ANSI 着色全丢，思考/回复同色
+
+**发现时间**: 2026-09-24（用户附对比截图：安装包内 AI 渲染与浏览器 dev 不一致，思考内容与回复全白）
+**影响范围**: 桌面形态全部终端/AI 渲染（WorkspaceView 共享 xterm 的 ANSI 色彩：思考 dim、❯ 青色提示符、彩色命令输出全部退化）
+**症状**: 浏览器 dev 思考内容灰色（\x1b[2m dim）、回复白色；打包壳内同为白色；背景色正常（外部 CSS 生效）
+**根本原因**: xterm DOM 渲染器的全部着色规则（ANSI 16/256 色类、dim 的 50% 淡化色）不在随 bundle 的 xterm.css 里，而是 `DomRenderer._injectCss` 用 `document.createElement('style')` 动态注入（实证：node_modules 源码 L155-275）；桌面 CSP 任务 3.2 当时注释断言「xterm 只走 CSSOM 动态设样式不受 CSP 拦截」只对 per-span 颜色成立，动态 `<style>` 元素受 style-src 管控——无 'unsafe-inline' 即被 Chromium 整块拦截。取证链：先证伪“旧 bundle”假设（包内/暂存/当前三处 dist 逐文件 SHA256 一致），再源码定位注入机制。浏览器 dev 不注入 CSP 故正常。
+**解决方案**: `vite.config.ts` DESKTOP_CSP 的 style-src 补 'unsafe-inline'（xterm.js 官方对 DOM 渲染器的明确要求；script-src 保持 'self' 不连带放宽），重建后经 `npm run build` 产物 index.html 验证 meta 已含。实证验收：重打包后桌面壳内思考恢复灰色。
+**预防措施**: ①对第三方库定 CSP 前，必须区分其样式注入的三种通道（外部 css 文件 / 元素 style 属性经 CSSOM / 动态 `<style>` 标签），只有第一种被 'self' 覆盖；对带运行时样式生成的库（xterm/编辑器/canvas 类）先查官方 CSP 文档再做 grep 推断；②“打包后与浏览器不一致”类反馈，第一步用哈希对比证伪/坐实“bundle 不同”，再查环境差异（CSP/GPU/字体），不要直接怀疑代码；③CSP 拦截在 Electron 不白屏只静默降级，复验时必项检查 devtools console 的 Refused to apply inline style 告警是否消失。
+
+## 29. 内网自托管模型思考内容以 think 开闭标签内联在正文：后端只认 reasoning_content 字段，终端里满屏原始标签
+
+**发现时间**: 2026-09-24（用户附截图：MindIE 部署的 Qwen3 在桌面壳/浏览器里思考内容未渲染为灰色 [思考] 段，而是带 think 开闭标签混在回答里；云端模型正常）
+**影响范围**: 全部 AI 聊天渲染（桌面壳与浏览器 dev 同犯，因为根因在后端）；model-provider「思考与非思考双模式」MUST 条款不满足
+**症状**: 思考模式下面板里出现字面 think 开/闭标签对，标签内文本与回答同色同段；而云端（DashScope/DeepSeek 兼容端点）经 reasoning_content 独立字段返回思考，渲染正常
+**根本原因**: 后端流式消费只认 `AssistantMessage` 元数据的 `reasoningContent` 键（OpenAI 兼容扩展字段），content 里的增量无条件全部归 answer_delta；而 Qwen3 类自托管推理服务（MindIE/vLLM 部署）把思考直接内联在 content 里逐字流出，不填独立字段——同一 OpenAI 协议下思考的两条载体通道只实现了一条。
+**解决方案**: 新增 `InlineThinkTagParser`（有状态增量分流器：标签内归 thinking、标签外归 answer、标签字符吞掉；尾部可能是半截标签前缀的字符扣在待定缓冲防 SSE 分片拦腰截断泄漏碎片；回合结束 flush，未闭合标签余文归思考）；`streamRound` 仅在思考模式接线（与 reasoningContent 同口径，非思考模式原样透传不解析，回归用例钉住）；分流后仍走既有 thinking_delta/answer_delta 帧型与 reasoning/content 双列落库，前端零改动。TDD：RED 4 用例精确 3 失败（透传守卫用例先行绿）→ GREEN 定向 42/42 → 全量 807/807；主 spec model-provider 补「内联思考标签分流」场景。
+**预防措施**: ①接 OpenAI 兼容协议时“思考”有两类载体（独立字段 reasoning_content vs 正文内联 think 开闭标签），只实现前者就会在内网自托管模型上碎掉，选型探测必须覆盖两类；②流式文本里找定长标记必须按“跨分片截断”设计（待定后缀缓存 + 回合末 flush），任何“等收齐再正则切”的方案都保不住实时性；③编辑工具链会把成对尖括号标记当控制序列处理：源码/提交信息里需要这类字面量时用字符串拼接（"<"+"think"+">"）构造，写入后必须读回磁盘核实。
+
+## 30. 升级安装后桌面快捷方式图标不更新：keepShortcuts 不重建 lnk + Explorer 图标缓存按路径复用旧位图
+
+**发现时间**: 2026-09-24（用户真机反馈：win.icon 修好后重装，开始菜单/exe 属性图标都新，唯独桌面快捷方式仍是 Electron 默认图标）
+**影响范围**: 所有升级安装路径的用户桌面；首次安装不受影响
+**症状**: 取证：已装 exe 仍是旧版（用户装的 win.icon 修复前的包）；且桌面 lnk 写入时间停在首次安装——electron-builder 的 keepShortcuts 机制（卸载旧版时保留快捷方式、升级时不重建）使 lnk 根本不重写；即便重建，lnk 图标按「exe 路径+索引」取自 exe，Explorer 图标缓存命中旧位图不刷新（模板只发 SHCNE_ASSOCCHANGED，刷关联不刷图标缓存）
+**根本原因**: 三层叠加：①用户装的是修复前包（时间戳取证坐实）；②keepShortcuts 升级路径跳过 CreateShortCut；③NSIS/Explorer 图标缓存无主动失效通知。
+**解决方案**: 新增 `frontend/desktop/installer/installer.nsh` 经 `nsis.include` 注入 `customInstall` 宏（在 addDesktopLink 之后执行）：无条件 Delete+CreateShortCut 重建桌面 lnk（参数与模板一致）→ SHChangeNotify(SHCNE_UPDATEIMAGE+FLUSH / SHCNE_ASSOCCHANGED+FLUSH) 弃图标缓存 → `ie4uinit.exe -show` 兑底。注入机制用对照实验坐实：临时塞非法指令 BogusCommandProbeXYZ → makensis 报「Error in macro customInstall … installSection.nsh on line 82」→ 删除探针重建 exit=0。注意 nsh 不能放默认 build/ 位（构建脚本每次清空该暂存目录），放固定的 installer/ 目录；getResource 对找不到的 include 会抛 InvalidConfigurationError，构建成功即路径解析正确。
+**预防措施**: ①“图标没变”类反馈先取证已装 exe 时间戳判断用户装的是哪版包，再查 lnk 写入时间判断快捷方式是否被重建，两层原因处置完全不同；②验证“配置真的生效”不能只看构建 exit=0（静默跳过也绿），用故意破坏法对照实验证明注入链路存在；③NSIS 自定义宏的执行时机查模板源码确认（customInstall 在 addDesktopLink 之后），不要凭文档记忆。
+
 ---
 
-**最后更新**: 2026-09-23
+**最后更新**: 2026-09-24
 **维护者**: AI Agent + 开发团队

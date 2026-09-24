@@ -12,13 +12,13 @@
 2. **OpenSpec** — 规格驱动开发，specs 作为真相源，changes 管理变更
 3. **Superpowers** — 可组合技能（vendored 到 `.qoder/skills/`）增强 AI 代理纪律性
 
-> 技术栈已由 `add-ssh-ai-agent-mvp` 变更及现有实现确立，见下方「技术栈选型约束」。桌面运行时与安装器尚未选定；不得擅自引入新业务框架或宣称 Windows 兼容已通过。
+> 技术栈已由 `add-ssh-ai-agent-mvp` 变更及现有实现确立，见下方「技术栈选型约束」。桌面运行时与安装器已由 `add-desktop-client` 选定（Electron + electron-builder NSIS + 捆绑 Temurin JRE 17）；兼容性以各变更 Release 页实机验证范围为准，不得擅自宣称未验证的系统已通过。
 
 ## 技术栈选型约束
-- 前端：Vue3 + TypeScript + Vite + Pinia + Vue Router + xterm.js，原生 CSS 深色终端工作区。
+- 前端：Vue3 + TypeScript + Vite + Pinia + Vue Router + xterm.js，原生 CSS 深色终端工作区；桌面壳 Electron（`frontend/desktop/`，本地授权见 desktop-client spec，页面由后端同源托管）。
 - 后端：Java 17 编译基线 + Spring Boot 3.5 + Spring AI 1.1 + sshj；数据使用 MyBatis-Plus + SQLite(WAL) + Flyway，凭据使用 java-keyring + AES-GCM。具体版本以清单/锁文件为准。
 - 契约：`contract/openapi.yaml` 生成 REST 接口/客户端；`contract/asyncapi.yaml` 约束手写 WS 类型与对齐测试。
-- 远端仅支持 Linux 服务器；最终客户端只面向 Windows 7/10/11。当前仍是 Web MVP，安装包与各系统兼容性未完成验证，尤其 Win7 需要独立可行性评估。
+- 远端仅支持 Linux 服务器；最终客户端只面向 Windows 10/11（x64），Win7/8.1 兼容承诺已由 `add-desktop-client` 移除（Electron 23+ 不支持 Win7）。桌面安装包 v0.1.0 经 `scripts/build-desktop.ps1` 产出，发行者署名「李仔文 liziwen」（未经 Authenticode 签名）；各系统版本兼容以 Release 页实机验证记录为准，未验证项不外宣。
 - 公共、前端、后端、数据库与平台规范统一见 `.qoder/rules/`；规则是后续开发约束，不等于存量缺口已修复。
 
 ## 仓库架构（AI Workspace）
